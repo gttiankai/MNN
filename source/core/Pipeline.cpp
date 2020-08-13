@@ -14,6 +14,7 @@
 #include "core/WrapExecution.hpp"
 //#define MNN_OPEN_TIME_TRACE
 #include <MNN/AutoTime.hpp>
+#include <fstream>
 //#define MNN_DEBUG_TENSOR_SIZE
 namespace MNN {
 OperatorInfo::OperatorInfo() {
@@ -330,10 +331,46 @@ ErrorCode Pipeline::execute() {
     mBackend->onExecuteBegin();
     for (int i=0; i<mUnits.size(); ++i) {
         auto& u = mUnits[i];
+        if(u->name().compare("BoxPredictor_0/Reshape_1") == 0) {
+          printf("catch you\n");
+        }
+
         auto code = u->execute();
         if (code != NO_ERROR) {
             mBackend->onExecuteEnd();
             return code;
+        }
+        //std::string outputLayerName = "concat___tr4Squeeze";
+        std::string outputLayerName = "Squeeze";
+        if (u->name().compare(outputLayerName) == 0) {
+          printf("=====================\n");
+          u->mOutputs[0]->printShape();
+          auto nchwTensor = new Tensor(u->mOutputs[0], MNN::Tensor::CAFFE, true);
+          u->mOutputs[0]->copyToHostTensor(nchwTensor);
+          nchwTensor->printShape();
+          printf("=====================\n");
+          replace(outputLayerName.begin(), outputLayerName.end(), '/', '-');
+          std::ofstream outputFile(
+              "/Users/tiankai/Downloads/tf-lite-models/ssd/output-mnn-debug-" +
+              outputLayerName + "-nchw.txt");
+          auto data_ptr = nchwTensor->host<float>();
+          for (int i = 0; i < nchwTensor->elementSize(); ++i) {
+            outputFile << *(data_ptr + i) << "\n";
+          }
+          outputFile.close();
+          auto nhwcTensor = new Tensor(u->mOutputs[0], MNN::Tensor::TENSORFLOW, true);
+          u->mOutputs[0]->copyToHostTensor(nhwcTensor);
+          nhwcTensor->printShape();
+          std::ofstream nhwc_outputFile(
+              "/Users/tiankai/Downloads/tf-lite-models/ssd/output-mnn-debug-" +
+                  outputLayerName + "-nhwc.txt");
+          auto nhwc_data_ptr = nhwcTensor->host<float>();
+          for (int i = 0; i < nchwTensor->elementSize(); ++i) {
+            nhwc_outputFile << *(nhwc_data_ptr + i) << "\n";
+          }
+          nhwc_outputFile.close();
+          delete nhwcTensor;
+          delete nchwTensor;
         }
     }
     mBackend->onExecuteEnd();
