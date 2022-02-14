@@ -36,16 +36,15 @@ ErrorCode MetalROIPooling::onExecute(const std::vector<Tensor *> &inputs, const 
     ((int *)shape.contents)[6]   = oz;
     ((float *)shape.contents)[7] = mSpatialScale;
 
-    auto encoder   = [context encoder];
+    auto encoder   = backend->encoder();
     auto bandwidth = [context load:@"ROI_pooling" encoder:encoder];
-    [encoder setBuffer:(__bridge id<MTLBuffer>)(void *)input->deviceId() offset:0 atIndex:0];
-    [encoder setBuffer:(__bridge id<MTLBuffer>)(void *)roi->deviceId() offset:0 atIndex:1];
-    [encoder setBuffer:(__bridge id<MTLBuffer>)(void *)output->deviceId() offset:0 atIndex:2];
+    [encoder setBuffer:(id<MTLBuffer>)((MetalRuntimeAllocator::MetalBufferAlloc *)input->deviceId())->getBuffer() offset:TensorUtils::getDescribe(input)->extra.offset atIndex:0];
+    [encoder setBuffer:(id<MTLBuffer>)((MetalRuntimeAllocator::MetalBufferAlloc *)roi->deviceId())->getBuffer() offset:TensorUtils::getDescribe(roi)->extra.offset atIndex:1];
+    [encoder setBuffer:(id<MTLBuffer>)((MetalRuntimeAllocator::MetalBufferAlloc *)output->deviceId())->getBuffer() offset:TensorUtils::getDescribe(output)->extra.offset atIndex:2];
     [encoder setBuffer:shape offset:0 atIndex:3];
     [context dispatchEncoder:encoder
                      threads:{ (NSUInteger) ow, (NSUInteger)oh, (NSUInteger)oz *ob }
                    bandwidth:bandwidth];
-    [encoder endEncoding];
     MNN_PRINT_ENCODER(context, encoder);
     return NO_ERROR;
 }
@@ -53,7 +52,7 @@ ErrorCode MetalROIPooling::onExecute(const std::vector<Tensor *> &inputs, const 
 class MetalROIPoolingCreator : public MetalBackend::Creator {
 public:
     virtual Execution *onCreate(const std::vector<Tensor *> &inputs, const MNN::Op *op, Backend *backend) const {
-        return new MetalROIPooling(backend, op->main_as_RoiPooling()->spatialScale());
+        return new MetalROIPooling(backend, op->main_as_RoiParameters()->spatialScale());
     }
 };
 REGISTER_METAL_OP_CREATOR(MetalROIPoolingCreator, OpType_ROIPooling);

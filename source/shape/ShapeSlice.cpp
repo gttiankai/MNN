@@ -6,15 +6,16 @@
 //  Copyright © 2018, Alibaba Group Holding Limited
 //
 
+#include "shape/SizeComputer.hpp"
 #include "core/Macro.h"
-#include "core/SizeComputer.hpp"
 #include <algorithm>
+#include <numeric>
 namespace MNN {
 
 class SliceComputer : public SizeComputer {
     virtual bool onComputeSize(const MNN::Op* op, const std::vector<Tensor*>& inputs,
                                const std::vector<Tensor*>& outputs) const override {
-        MNN_ASSERT(1 == inputs.size());
+        //MNN_ASSERT(1 == inputs.size());
         auto outputSize = (int)outputs.size();
         auto slice = op->main_as_Slice();
 
@@ -25,6 +26,11 @@ class SliceComputer : public SizeComputer {
             axis += input.dimensions;
         }
 
+        /*
+         If we want split (2, 10) => (2, 3) + (2, 5) + (2, 2), slicePoints is
+         1. [3, 8, 10] when slice->sourceType = NetSource_CAFFE
+         2. [3, 5, 2] otherwise
+         */
         if (MNN::NetSource_CAFFE == slice->sourceType()) {
             // caffe Slice
             int previous = 0;
@@ -46,14 +52,25 @@ class SliceComputer : public SizeComputer {
 
             output.dim[axis].extent = input.dim[axis].extent - previous;
         } else {
-            // tensorflow Split
-            if (1 == slice->slicePoints()->size()) {
-                // scalar
-                int numSplits = slice->slicePoints()->data()[0];
-                numSplits = std::min(numSplits, outputSize);
-                MNN_ASSERT(0 == input.dim[axis].extent % numSplits);
-                const int splitDim = input.dim[axis].extent / numSplits;
-                for (int i = 0; i < numSplits; i++) {
+            // tensorflow/Torch Split
+            if (inputs.size() == 1 && (nullptr == slice->slicePoints() || 1 == slice->slicePoints()->size())) {
+                // slicePoint size is 1:
+                // TF value is num_split, Torch value is split_size
+                int numSplits = outputSize,
+                    splitDim = input.dim[axis].extent / numSplits;
+                if (MNN::NetSource_TORCH == slice->sourceType()) {
+                    if (nullptr != slice->slicePoints()) {
+                        splitDim = slice->slicePoints()->data()[0];
+                    }
+                    numSplits = input.dim[axis].extent / splitDim;
+                } else if (MNN::NetSource_TENSORFLOW == slice->sourceType()) {
+                    if (nullptr != slice->slicePoints() && slice->slicePoints()->data()[0] != outputSize) {
+                        numSplits = slice->slicePoints()->data()[0];
+                    }
+                    MNN_ASSERT(0 == input.dim[axis].extent % numSplits);
+                    splitDim = input.dim[axis].extent / numSplits;
+                }
+                for (int i = 0; i < outputSize; i++) {
                     auto& output      = outputs[i]->buffer();
                     output.dimensions = input.dimensions;
                     output.type       = input.type;
@@ -61,8 +78,19 @@ class SliceComputer : public SizeComputer {
                     output.dim[axis].extent = splitDim;
                 }
             } else {
-                // one dimension tensor, ex: [5,30]=>[5,4]+[5,15]+[5,11], slicePoints is [4, 15, 11]
-                int numberSplits = slice->slicePoints()->size();
+                std::vector<int> slicePoints;
+                if (inputs.size() == 2) {
+                    slicePoints.assign(inputs[1]->host<int>(), inputs[1]->host<int>() + inputs[1]->elementSize());
+                } else if (slice->slicePoints() != nullptr) {
+                    slicePoints.assign(slice->slicePoints()->begin(), slice->slicePoints()->end());
+                }
+                int totalLen = std::accumulate(slicePoints.begin(), slicePoints.end(), 0);
+                if (totalLen != inputs[0]->length(axis)) {
+                    MNN_ASSERT(false);
+                    return false;
+                }
+                int numberSplits = slicePoints.size();
+                MNN_ASSERT(0 < numberSplits);
                 numberSplits = std::min(numberSplits, outputSize);
                 int determineTensorIndex = -1;
                 int maxSize              = 0;
@@ -71,7 +99,7 @@ class SliceComputer : public SizeComputer {
                     output.type       = input.type;
                     output.dimensions = input.dimensions;
                     ::memcpy(output.dim, input.dim, input.dimensions * sizeof(halide_dimension_t));
-                    auto length = slice->slicePoints()->data()[i];
+                    auto length = slicePoints[i];
                     if (-1 != length) {
                         output.dim[axis].extent = length;
                         maxSize += length;
@@ -96,5 +124,5 @@ class SliceComputer : public SizeComputer {
     }
 };
 
-REGISTER_SHAPE(SliceComputer, OpType_Slice);
+REGISTER_SHAPE_INPUTS(SliceComputer, OpType_Slice, {1});
 } // namespace MNN

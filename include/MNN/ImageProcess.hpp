@@ -16,14 +16,21 @@
 namespace MNN {
 namespace CV {
 enum ImageFormat {
-    RGBA = 0,
-    RGB,
-    BGR,
-    GRAY,
-    BGRA,
+    RGBA     = 0,
+    RGB      = 1,
+    BGR      = 2,
+    GRAY     = 3,
+    BGRA     = 4,
+    YCrCb    = 5,
+    YUV      = 6,
+    HSV      = 7,
+    XYZ      = 8,
+    BGR555   = 9,
+    BGR565   = 10,
     YUV_NV21 = 11,
     YUV_NV12 = 12,
     YUV_I420 = 13,
+    HSV_FULL = 14,
 };
 
 enum Filter { NEAREST = 0, BILINEAR = 1, BICUBIC = 2 };
@@ -133,11 +140,20 @@ public:
     }
     static Tensor* createImageTensor(halide_type_t type, int w, int h, int bpp, void* p = nullptr);
 
+    /**
+     * @brief set padding value when wrap=ZERO.
+     * @param value     padding value.
+     * @return void.
+     */
+    void setPadding(uint8_t value) {
+        mPaddingValue = value;
+    }
 private:
     ImageProcess(const Config& config);
     Matrix mTransform;
     Matrix mTransformInvert;
     Inside* mInside;
+    uint8_t mPaddingValue = 0;
 };
 } // namespace CV
 } // namespace MNN

@@ -23,21 +23,33 @@ namespace MNN {
 namespace OpenCL {
 
 inline std::vector<int> tensorShapeFormat(const Tensor *input) {
+    
     int iN = (0 != input->buffer().dim[0].extent) ? input->buffer().dim[0].extent : 1;
     int iC = (0 != input->buffer().dim[1].extent) ? input->buffer().dim[1].extent : 1;
     int iH = (0 != input->buffer().dim[2].extent) ? input->buffer().dim[2].extent : 1;
     int iW = (0 != input->buffer().dim[3].extent) ? input->buffer().dim[3].extent : 1;
 
-    if (TensorUtils::getDescribe(input)->dimensionFormat == MNN::MNN_DATA_FORMAT_NHWC) {
+    if(input->buffer().dimensions > 4)//more than 4 dimensions put to N dimension
+    {
+        for(int i = 4; i < input->buffer().dimensions; i++)
+        {
+            iW *= input->buffer().dim[i].extent;
+        }
+    }
+    
+    if (TensorUtils::getDescribe(input)->dimensionFormat == MNN::MNN_DATA_FORMAT_NHWC)
+    {
         iN = (0 < input->buffer().dim[0].extent) ? input->buffer().dim[0].extent : 1;
         iH = (0 < input->buffer().dim[1].extent) ? input->buffer().dim[1].extent : 1;
         iW = (0 < input->buffer().dim[2].extent) ? input->buffer().dim[2].extent : 1;
         iC = (0 < input->buffer().dim[3].extent) ? input->buffer().dim[3].extent : 1;
-    }
-    
-    if (input->buffer().dimensions > 4) { // more than 4 dimensions put to N dimension
-        for (int i = 4; i < input->buffer().dimensions; i++) {
-            iN *= input->buffer().dim[i].extent;
+        
+        if(input->buffer().dimensions > 4)//more than 4 dimensions put to N dimension
+        {
+            for(int i = 4; i < input->buffer().dimensions; i++)
+            {
+                iC *= input->buffer().dim[i].extent;
+            }
         }
     }
     
@@ -90,6 +102,7 @@ inline cl::Buffer &openCLBuffer(const Tensor *tensor) {
 inline cl::Image &openCLImage(const Tensor *tensor) {
     return (*(cl::Image *)(tensor->deviceId()));
 }
+
 void getImageShape(const std::vector<int> &shape, /* NHWC */
                    const OpenCLBufferFormat type, std::vector<size_t> *imageShape);
 
@@ -98,17 +111,18 @@ std::vector<uint32_t> turnLocalSize(cl::Kernel *kernel, std::vector<uint32_t> &g
 void run3DKernelDefault(const ::cl::Kernel &kernel, const std::vector<uint32_t> &gws, const std::vector<uint32_t> &lws,
                         OpenCLRuntime *runtime, cl::Event* eventPtr = nullptr);
 
-void run2DKernelDefault(const ::cl::Kernel &kernel, const uint32_t *gws, const std::vector<uint32_t> &lws,
-                        OpenCLRuntime *runtime);
-
 void runKernel2D(const ::cl::Kernel &kernel, const std::vector<uint32_t> &gws, const std::vector<uint32_t> &lws,
                  OpenCLRuntime *runtime, cl::Event* eventPtr = nullptr);
 
 void runTurnKernelLWS2D(const ::cl::Kernel &kernel, const std::vector<uint32_t> &gws, const std::vector<uint32_t> &lws,
                         OpenCLRuntime *runtime);
 
-std::vector<uint32_t> localWS3DDefault(const std::vector<uint32_t> &gws, const uint32_t maxWorkGroupSize,
-                                       OpenCLRuntime *runtime);
+std::pair<std::vector<uint32_t>, uint32_t> localWS3DDefault(const std::vector<uint32_t> &gws, const uint32_t maxWorkGroupSize,
+                                       OpenCLRuntime *runtime, const std::string &kernelName, const cl::Kernel &mKernel);
+
+std::pair<std::vector<uint32_t>, uint32_t> localWS2DDefault(const std::vector<uint32_t> &gws, const uint32_t maxWorkGroupSize,
+                                       OpenCLRuntime *runtime, const std::string &kernelName, const cl::Kernel &mKernel);
+
 void copyBufferToImage(OpenCLRuntime *runtime, const cl::Buffer &buffer, const cl::Image &image, int w, int h);
 
 } // namespace OpenCL

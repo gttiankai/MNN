@@ -11,7 +11,10 @@
 
 #include "backend/cpu/CPUConvolution.hpp"
 #include "backend/cpu/compute/ConvolutionFloatFactory.h"
-#include "backend/cpu/compute/WinogradOptFunction.hpp"
+#include "backend/cpu/compute/CommonOptFunction.h"
+
+#define CONVOLUTION_WINOGRAD_MAX_UNIT 8
+#define CONVOLUTION_WINOGRAD_MIN_UNIT 2
 
 namespace MNN {
 class ConvolutionWinograd : public CPUConvolution {
@@ -25,21 +28,24 @@ public:
 
     static bool canUseWinograd(const Convolution2DCommon *convOp);
     static int bestWinogradUnit(const Convolution2DCommon *convOp, const Tensor *input, const Tensor *output,
-                                int threadnumber);
-
+                                int threadnumber, Backend* b);
+    virtual bool onClone(Backend* bn, const Op* op, Execution** dst) override;
 private:
-    std::shared_ptr<Tensor> mBias;
+    ConvolutionWinograd(std::shared_ptr<CPUConvolution::Resource> resource, const Convolution2DCommon *convOp, Backend* b) : CPUConvolution(convOp, b) {
+        mResource = resource;
+    }
+    std::shared_ptr<CPUConvolution::Resource> mResource;
     std::shared_ptr<Tensor> mA;
     std::shared_ptr<Tensor> mB;
-    std::shared_ptr<Tensor> mWeight;
 
-    Tensor mTempBuffer;
-    Tensor mTransformMidBuffer;
-    Tensor mGemmMidBuffer;
-    Tensor mCacheBuffer;
+    std::shared_ptr<Tensor> mTempBuffer;
+    std::shared_ptr<Tensor> mTransformMidBuffer;
+    std::shared_ptr<Tensor> mGemmMidBuffer;
 
-    WinogradFunction::TransformFunc mSourceTransform;
-    WinogradFunction::TransformFunc mDestTransform;
+    CoreFunctions::WinoTransPackFunc mSourceTransformPack;
+    CoreFunctions::WinoUnrollTransFunc mSourceUnrollTransform;
+    std::shared_ptr<CoreFunctions::WinoUnrollTransFunc> mDestUnrollTransform;
+    std::vector<float> mPostParameters;
 };
 } // namespace MNN
 #endif /* ConvolutionWinograd_hpp */

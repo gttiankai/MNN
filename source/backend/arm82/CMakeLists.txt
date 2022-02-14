@@ -1,39 +1,18 @@
 
-file(GLOB MNN_ARM82_SRCS "${CMAKE_CURRENT_LIST_DIR}/*.cpp")
+file(GLOB MNN_ARM82_SRCS "${CMAKE_CURRENT_LIST_DIR}/*.cpp" "${CMAKE_CURRENT_LIST_DIR}/compute/*.cpp")
 
-set(COMPILE_ARM64 OFF)
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^aarch64" OR IOS_ARCH STREQUAL "arm64")
-    set(COMPILE_ARM64 ON)
-endif()
-
-if(COMPILE_ARM64)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^armv7" OR ARCHS MATCHES "^armv7(;armv7s)?")
+    file(GLOB MNN_ARM82_SRCS_ASM "${CMAKE_CURRENT_LIST_DIR}/asm/arm32/*")
+    add_library(MNN_Arm82 OBJECT ${MNN_ARM82_SRCS} ${MNN_ARM82_SRCS_ASM})
+    target_compile_options(MNN_Arm82 PRIVATE -march=armv8.2-a+fp16 -mfpu=neon-fp-armv8 -mfloat-abi=softfp -DENABLE_ARMV82)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^aarch64" OR ARCHS STREQUAL "arm64")
     file(GLOB MNN_ARM82_SRCS_ASM "${CMAKE_CURRENT_LIST_DIR}/asm/arm64/*")
+    add_library(MNN_Arm82 OBJECT ${MNN_ARM82_SRCS} ${MNN_ARM82_SRCS_ASM})
+    target_compile_options(MNN_Arm82 PRIVATE -march=armv8.2-a+fp16 -DENABLE_ARMV82)
 else()
-    set(MNN_ARM82_SRCS_ASM "")
+# Building fat binary requires multiple seperate builds and lipo-by-hand under CMake's design
 endif()
 
-IF(MNN_SEP_BUILD)
-    if (MNN_BUILD_FOR_ANDROID_COMMAND)
-        set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "../../../")
-    endif()
-    add_library(
-        MNN_Arm82
-        SHARED
-        ${MNN_ARM82_SRCS}
-        ${MNN_ARM82_SRCS_ASM}
-        )
-    target_link_libraries(MNN_Arm82 MNN)
-ELSE()
-    add_library(
-        MNN_Arm82
-        OBJECT
-        ${MNN_ARM82_SRCS}
-        ${MNN_ARM82_SRCS_ASM}
-        )
-ENDIF()
-
-if(COMPILE_ARM64)
-    target_compile_options(MNN_Arm82 PRIVATE -march=armv8.2-a+fp16)
-endif()
-
+target_include_directories(MNN_Arm82 PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+target_include_directories(MNN_Arm82 PRIVATE ${CMAKE_CURRENT_LIST_DIR}/compute/)
 target_include_directories(MNN_Arm82 PRIVATE ${CMAKE_CURRENT_LIST_DIR}/asm/)

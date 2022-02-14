@@ -6,9 +6,9 @@
 //  Copyright © 2018, Alibaba Group Holding Limited
 //
 
-#include <memory>
-#include <cmath>
 #include <MNN/ImageProcess.hpp>
+#include <cmath>
+#include <memory>
 #include "MNNTestSuite.h"
 #define MNN_OPEN_TIME_TRACE
 #include <MNN/AutoTime.hpp>
@@ -19,7 +19,7 @@ using namespace MNN::CV;
 class ImageProcessSpeedGrayToGrayTest : public MNNTestCase {
 public:
     virtual ~ImageProcessSpeedGrayToGrayTest() = default;
-    virtual bool run() {
+    virtual bool run(int precision) {
         int w = 1080, h = 720, size = w * h;
         std::vector<uint8_t> integers(size);
         for (int i = 0; i < size; ++i) {
@@ -44,7 +44,7 @@ public:
         }
         {
             AUTOTIME;
-            for (int i=0; i<10; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 process->convert(integers.data(), w, h, 0, tensor.get());
             }
         }
@@ -56,7 +56,7 @@ MNNTestSuiteRegister(ImageProcessSpeedGrayToGrayTest, "speed/cv/image_process/gr
 class ImageProcessSpeedGrayToGrayBilinearTransformTest : public MNNTestCase {
 public:
     virtual ~ImageProcessSpeedGrayToGrayBilinearTransformTest() = default;
-    virtual bool run() {
+    virtual bool run(int precision) {
         ImageProcess::Config config;
         config.sourceFormat = GRAY;
         config.destFormat   = GRAY;
@@ -103,19 +103,20 @@ public:
         }
         {
             AUTOTIME;
-            for (int i=0; i<10; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 process->convert(integers.get(), sw, sh, 0, tensor.get());
             }
         }
         return true;
     }
 };
-MNNTestSuiteRegister(ImageProcessSpeedGrayToGrayBilinearTransformTest, "speed/cv/image_process/gray_to_gray_bilinear_transorm");
+MNNTestSuiteRegister(ImageProcessSpeedGrayToGrayBilinearTransformTest,
+                     "speed/cv/image_process/gray_to_gray_bilinear_transorm");
 
 class ImageProcessSpeedGrayToGrayNearestTransformTest : public MNNTestCase {
 public:
     virtual ~ImageProcessSpeedGrayToGrayNearestTransformTest() = default;
-    virtual bool run() {
+    virtual bool run(int precision) {
         ImageProcess::Config config;
         config.sourceFormat = GRAY;
         config.destFormat   = GRAY;
@@ -160,19 +161,20 @@ public:
         }
         {
             AUTOTIME;
-            for (int i=0; i<10; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 process->convert(integers.get(), sw, sh, 0, tensor.get());
             }
         }
         return true;
     }
 };
-MNNTestSuiteRegister(ImageProcessSpeedGrayToGrayNearestTransformTest, "speed/cv/image_process/gray_to_gray_nearest_transorm");
+MNNTestSuiteRegister(ImageProcessSpeedGrayToGrayNearestTransformTest,
+                     "speed/cv/image_process/gray_to_gray_nearest_transorm");
 
 class ImageProcessSpeedGrayToRGBATest : public MNNTestCase {
 public:
     virtual ~ImageProcessSpeedGrayToRGBATest() = default;
-    virtual bool run() {
+    virtual bool run(int precision) {
         int w = 1080, h = 720, size = w * h;
         std::vector<uint8_t> gray(size);
         for (int i = 0; i < size; ++i) {
@@ -203,7 +205,7 @@ public:
         }
         {
             AUTOTIME;
-            for (int i=0; i<10; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 process->convert(gray.data(), w, h, 0, tensor.get());
             }
         }
@@ -215,7 +217,7 @@ MNNTestSuiteRegister(ImageProcessSpeedGrayToRGBATest, "speed/cv/image_process/gr
 class ImageProcessSpeedBGRToGrayTest : public MNNTestCase {
 public:
     virtual ~ImageProcessSpeedBGRToGrayTest() = default;
-    virtual bool run() {
+    virtual bool run(int precision) {
         int w = 1080, h = 720, size = w * h;
         std::vector<uint8_t> bgr(size * 3);
         for (int i = 0; i < size; ++i) {
@@ -245,7 +247,7 @@ public:
         }
         {
             AUTOTIME;
-            for (int i=0; i<10; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 process->convert(bgr.data(), w, h, 0, tensor.get());
             }
         }
@@ -255,7 +257,7 @@ public:
 MNNTestSuiteRegister(ImageProcessSpeedBGRToGrayTest, "speed/cv/image_process/bgr_to_gray");
 class ImageProcessSpeedRGBToBGRTest : public MNNTestCase {
 public:
-    virtual bool run() {
+    virtual bool run(int precision) {
         int w = 1081, h = 719, size = w * h;
         std::vector<uint8_t> integers(size * 3);
         for (int i = 0; i < size; ++i) {
@@ -266,7 +268,7 @@ public:
         }
         std::vector<uint8_t> resultData(size * 3);
         std::shared_ptr<MNN::Tensor> tensor(
-                                            MNN::Tensor::create<uint8_t>(std::vector<int>{1, h, w, 3}, resultData.data(), Tensor::TENSORFLOW));
+            MNN::Tensor::create<uint8_t>(std::vector<int>{1, h, w, 3}, resultData.data(), Tensor::TENSORFLOW));
         ImageProcess::Config config;
         config.sourceFormat = RGB;
         config.destFormat   = BGR;
@@ -285,7 +287,7 @@ public:
         }
         {
             AUTOTIME;
-            for (int i=0; i<10; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 process->convert(integers.data(), w, h, 0, tensor.get());
             }
         }
@@ -297,7 +299,7 @@ MNNTestSuiteRegister(ImageProcessSpeedRGBToBGRTest, "speed/cv/image_process/rgb_
 class ImageProcessSpeedRGBAToBGRATest : public MNNTestCase {
 public:
     virtual ~ImageProcessSpeedRGBAToBGRATest() = default;
-    virtual bool run() {
+    virtual bool run(int precision) {
         int w = 1081, h = 720, size = w * h;
         std::vector<uint8_t> integers(size * 4);
         for (int i = 0; i < size; ++i) {
@@ -329,7 +331,7 @@ public:
         }
         {
             AUTOTIME;
-            for (int i=0; i<10; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 process->convert(integers.data(), w, h, 0, tensor.get());
             }
         }
@@ -341,7 +343,7 @@ MNNTestSuiteRegister(ImageProcessSpeedRGBAToBGRATest, "speed/cv/image_process/rg
 class ImageProcessSpeedBGRToBGRTest : public MNNTestCase {
 public:
     virtual ~ImageProcessSpeedBGRToBGRTest() = default;
-    virtual bool run() {
+    virtual bool run(int precision) {
         int w = 1020, h = 960, size = w * h;
         std::vector<uint8_t> integers(size * 3);
         for (int i = 0; i < size; ++i) {
@@ -372,7 +374,7 @@ public:
         }
         {
             AUTOTIME;
-            for (int i=0; i<10; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 process->convert(integers.data(), w, h, 0, tensor.get());
             }
         }
@@ -384,7 +386,7 @@ MNNTestSuiteRegister(ImageProcessSpeedBGRToBGRTest, "speed/cv/image_process/bgr_
 class ImageProcessSpeedRGBToGrayTest : public MNNTestCase {
 public:
     virtual ~ImageProcessSpeedRGBToGrayTest() = default;
-    virtual bool run() {
+    virtual bool run(int precision) {
         int w = 1080, h = 720, size = w * h;
         std::vector<uint8_t> rgb(size * 3);
         for (int i = 0; i < size; ++i) {
@@ -414,7 +416,7 @@ public:
         }
         {
             AUTOTIME;
-            for (int i=0; i<10; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 process->convert(rgb.data(), w, h, 0, tensor.get());
             }
         }
@@ -426,7 +428,7 @@ MNNTestSuiteRegister(ImageProcessSpeedRGBToGrayTest, "speed/cv/image_process/rgb
 class ImageProcessSpeedRGBAToGrayTest : public MNNTestCase {
 public:
     virtual ~ImageProcessSpeedRGBAToGrayTest() = default;
-    virtual bool run() {
+    virtual bool run(int precision) {
         int w = 1080, h = 720, size = w * h;
         std::vector<uint8_t> rgba(size * 4);
         for (int i = 0; i < size; ++i) {
@@ -457,7 +459,7 @@ public:
         }
         {
             AUTOTIME;
-            for (int i=0; i<10; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 process->convert(rgba.data(), w, h, 0, tensor.get());
             }
         }
@@ -469,7 +471,7 @@ MNNTestSuiteRegister(ImageProcessSpeedRGBAToGrayTest, "speed/cv/image_process/rg
 class ImageProcessSpeedRGBAToGrayBilinearTransformTest : public MNNTestCase {
 public:
     virtual ~ImageProcessSpeedRGBAToGrayBilinearTransformTest() = default;
-    virtual bool run() {
+    virtual bool run(int precision) {
         ImageProcess::Config config;
         config.sourceFormat = RGBA;
         config.destFormat   = GRAY;
@@ -516,19 +518,20 @@ public:
         }
         {
             AUTOTIME;
-            for (int i=0; i<10; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 process->convert(integers.get(), sw, sh, 0, tensor.get());
             }
         }
         return true;
     }
 };
-MNNTestSuiteRegister(ImageProcessSpeedRGBAToGrayBilinearTransformTest, "speed/cv/image_process/rgba_to_gray_bilinear_transorm");
+MNNTestSuiteRegister(ImageProcessSpeedRGBAToGrayBilinearTransformTest,
+                     "speed/cv/image_process/rgba_to_gray_bilinear_transorm");
 
 class ImageProcessSpeedRGBAToGrayNearestTransformTest : public MNNTestCase {
 public:
     virtual ~ImageProcessSpeedRGBAToGrayNearestTransformTest() = default;
-    virtual bool run() {
+    virtual bool run(int precision) {
         ImageProcess::Config config;
         config.sourceFormat = RGBA;
         config.destFormat   = GRAY;
@@ -575,19 +578,20 @@ public:
         }
         {
             AUTOTIME;
-            for (int i=0; i<10; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 process->convert(integers.get(), sw, sh, 0, tensor.get());
             }
         }
         return true;
     }
 };
-MNNTestSuiteRegister(ImageProcessSpeedRGBAToGrayNearestTransformTest, "speed/cv/image_process/rgba_to_gray_nearest_transorm");
+MNNTestSuiteRegister(ImageProcessSpeedRGBAToGrayNearestTransformTest,
+                     "speed/cv/image_process/rgba_to_gray_nearest_transorm");
 
 class ImageProcessSpeedRGBAToBGRTest : public MNNTestCase {
 public:
     virtual ~ImageProcessSpeedRGBAToBGRTest() = default;
-    virtual bool run() {
+    virtual bool run(int precision) {
         int w = 1500, h = 1080, size = w * h;
         std::vector<uint8_t> rgba(size * 4);
         for (int i = 0; i < size; ++i) {
@@ -615,7 +619,7 @@ public:
         }
         {
             AUTOTIME;
-            for (int i=0; i<10; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 process->convert(rgba.data(), w, h, 0, tensor.get());
             }
         }
@@ -627,7 +631,7 @@ MNNTestSuiteRegister(ImageProcessSpeedRGBAToBGRTest, "speed/cv/image_process/rgb
 class ImageProcessSpeedNV21ToRGBTest : public MNNTestCase {
 public:
     virtual ~ImageProcessSpeedNV21ToRGBTest() = default;
-    virtual bool run() {
+    virtual bool run(int precision) {
         ImageProcess::Config config;
         config.sourceFormat = YUV_NV21;
         config.destFormat   = RGB;
@@ -643,7 +647,7 @@ public:
         auto pixels = nv12.get();
         for (int y = 0; y < sh; ++y) {
             auto pixelY  = pixels + sw * y;
-            auto pixelUV = pixels + sw * sh + (y/2) * sw;
+            auto pixelUV = pixels + sw * sh + (y / 2) * sw;
             int magicY   = ((sh - y) * (sh - y)) % 79;
             for (int x = 0; x < sw; ++x) {
                 auto pixelX = pixelY + x;
@@ -653,7 +657,7 @@ public:
             }
             for (int x = 0; x < sw / 2; ++x) {
                 auto pixelX = pixelUV + 2 * x;
-                int magicX  = (x * x * x * x) % 283;
+                int magicX  = ((((x % 283) * (x % 283)) % 283) * (((x % 283) * (x % 283)) % 283)) % 283;
                 int magic0  = (magicX + magicY) % 255;
                 int magic1  = (magicX + magicY * 179) % 255;
                 pixelX[0]   = magic0;
@@ -697,7 +701,7 @@ public:
         }
         {
             AUTOTIME;
-            for (int i=0; i<10; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 process->convert(nv12.get(), sw, sh, 0, tensor.get());
             }
         }
@@ -709,7 +713,7 @@ MNNTestSuiteRegister(ImageProcessSpeedNV21ToRGBTest, "speed/cv/image_process/nv2
 class ImageProcessSpeedNV12ToRGBTest : public MNNTestCase {
 public:
     virtual ~ImageProcessSpeedNV12ToRGBTest() = default;
-    virtual bool run() {
+    virtual bool run(int precision) {
         ImageProcess::Config config;
         config.sourceFormat = YUV_NV12;
         config.destFormat   = RGB;
@@ -725,7 +729,7 @@ public:
         auto pixels = nv12.get();
         for (int y = 0; y < sh; ++y) {
             auto pixelY  = pixels + sw * y;
-            auto pixelUV = pixels + sw * sh + (y/2) * sw;
+            auto pixelUV = pixels + sw * sh + (y / 2) * sw;
             int magicY   = ((sh - y) * (sh - y)) % 79;
             for (int x = 0; x < sw; ++x) {
                 auto pixelX = pixelY + x;
@@ -735,7 +739,7 @@ public:
             }
             for (int x = 0; x < sw / 2; ++x) {
                 auto pixelX = pixelUV + 2 * x;
-                int magicX  = (x * x * x * x) % 283;
+                int magicX  = ((((x % 283) * (x % 283)) % 283) * (((x % 283) * (x % 283)) % 283)) % 283;
                 int magic0  = (magicX + magicY) % 255;
                 int magic1  = (magicX + magicY * 179) % 255;
                 pixelX[0]   = magic0;
@@ -771,15 +775,15 @@ public:
                 b         = b > 255 ? 255 : b;
                 auto diff = [](int a, int b) { return abs(a - b) > 5; };
                 if (diff(dstX[0], r) || diff(dstX[1], g) || diff(dstX[2], b)) {
-                    MNN_ERROR("%d, Error for NV12 to RGB: %d:  %d, %d, %d -> %d, %d, %d, wrong: %d, %d, %d\n", y, x, (int)srcX_Y[0],
-                              U, V, r, g, b, dstX[0], dstX[1], dstX[2]);
+                    MNN_ERROR("%d, Error for NV12 to RGB: %d:  %d, %d, %d -> %d, %d, %d, wrong: %d, %d, %d\n", y, x,
+                              (int)srcX_Y[0], U, V, r, g, b, dstX[0], dstX[1], dstX[2]);
                     return false;
                 }
             }
         }
         {
             AUTOTIME;
-            for (int i=0; i<10; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 process->convert(nv12.get(), sw, sh, 0, tensor.get());
             }
         }
@@ -788,12 +792,11 @@ public:
 };
 MNNTestSuiteRegister(ImageProcessSpeedNV12ToRGBTest, "speed/cv/image_process/nv12_to_rgb");
 
-
 class ImageProcessSpeedNV12ToRGBATest : public MNNTestCase {
 public:
     virtual ~ImageProcessSpeedNV12ToRGBATest() {
     }
-    virtual bool run() {
+    virtual bool run(int precision) {
         ImageProcess::Config config;
         config.sourceFormat = YUV_NV21;
         config.destFormat   = RGBA;
@@ -819,7 +822,7 @@ public:
             }
             for (int x = 0; x < sw / 2; ++x) {
                 auto pixelX = pixelUV + 2 * x;
-                int magicX  = (x * x * x * x) % 283;
+                int magicX  = ((((x % 283) * (x % 283)) % 283) * (((x % 283) * (x % 283)) % 283)) % 283;
                 int magic0  = (magicX + magicY) % 255;
                 int magic1  = (magicX + magicY * 179) % 255;
                 pixelX[0]   = magic0;
@@ -863,7 +866,7 @@ public:
         }
         {
             AUTOTIME;
-            for (int i=0; i<10; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 process->convert(nv12.get(), sw, sh, 0, tensor.get());
             }
         }
@@ -876,7 +879,7 @@ MNNTestSuiteRegister(ImageProcessSpeedNV12ToRGBATest, "speed/cv/image_process/nv
 class ImageProcessSpeedBGRToBGRFloatBlitterTest : public MNNTestCase {
 public:
     virtual ~ImageProcessSpeedBGRToBGRFloatBlitterTest() = default;
-    virtual bool run() {
+    virtual bool run(int precision) {
         int w = 1020, h = 756, size = w * h;
         std::vector<uint8_t> integers(size * 3);
         for (int i = 0; i < size; ++i) {
@@ -892,7 +895,7 @@ public:
         config.sourceFormat = BGR;
         config.destFormat   = BGR;
 
-        const float means[3] = {127.5f, 127.5f, 127.5f};
+        const float means[3]   = {127.5f, 127.5f, 127.5f};
         const float normals[3] = {2.0f / 255.0f, 2.0f / 255.0f, 2.0f / 255.0f};
         memcpy(config.mean, means, sizeof(means));
         memcpy(config.normal, normals, sizeof(normals));
@@ -904,14 +907,15 @@ public:
                 float result = floats[3 * i + j];
                 float right  = (integers[3 * i + j] - means[j]) * normals[j];
                 if (fabs(result - right) > 1e-6f) {
-                    MNN_ERROR("Error for blitter bgr to bgr\n%d ->i:%d, %f, right: %f\n", i, integers[3 * i + j], result, right);
+                    MNN_ERROR("Error for blitter bgr to bgr\n%d ->i:%d, %f, right: %f\n", i, integers[3 * i + j],
+                              result, right);
                     return false;
                 }
             }
         }
         {
             AUTOTIME;
-            for (int i=0; i<10; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 process->convert(integers.data(), w, h, 0, tensor.get());
             }
         }
@@ -924,7 +928,7 @@ MNNTestSuiteRegister(ImageProcessSpeedBGRToBGRFloatBlitterTest, "speed/cv/image_
 class ImageProcessSpeedGrayToGrayFloatBlitterTest : public MNNTestCase {
 public:
     virtual ~ImageProcessSpeedGrayToGrayFloatBlitterTest() = default;
-    virtual bool run() {
+    virtual bool run(int precision) {
         int w = 1024, h = 1080, size = w * h;
         std::vector<uint8_t> integers(size);
         for (int i = 0; i < size; ++i) {
@@ -938,7 +942,7 @@ public:
         config.sourceFormat = GRAY;
         config.destFormat   = GRAY;
 
-        const float means[1] = {127.5f};
+        const float means[1]   = {127.5f};
         const float normals[1] = {2.0f / 255.0f};
         memcpy(config.mean, means, sizeof(means));
         memcpy(config.normal, normals, sizeof(normals));
@@ -956,7 +960,7 @@ public:
         }
         {
             AUTOTIME;
-            for (int i=0; i<10; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 process->convert(integers.data(), w, h, 0, tensor.get());
             }
         }
@@ -965,11 +969,10 @@ public:
 };
 MNNTestSuiteRegister(ImageProcessSpeedGrayToGrayFloatBlitterTest, "speed/cv/image_process/gray_to_gray_blitter");
 
-
 class ImageProcessSpeedI420ToRGBTest : public MNNTestCase {
 public:
     virtual ~ImageProcessSpeedI420ToRGBTest() = default;
-    virtual bool run() {
+    virtual bool run(int precision) {
         ImageProcess::Config config;
         config.sourceFormat = YUV_I420;
         config.destFormat   = RGB;
@@ -985,7 +988,7 @@ public:
         auto pixels = nv12.get();
         for (int y = 0; y < sh; ++y) {
             auto pixelY  = pixels + sw * y;
-            auto pixelUV = pixels + sw * sh + (y/2) * sw;
+            auto pixelUV = pixels + sw * sh + (y / 2) * sw;
             int magicY   = ((sh - y) * (sh - y)) % 79;
             for (int x = 0; x < sw; ++x) {
                 auto pixelX = pixelY + x;
@@ -995,7 +998,7 @@ public:
             }
             for (int x = 0; x < sw / 2; ++x) {
                 auto pixelX = pixelUV + 2 * x;
-                int magicX  = (x * x * x * x) % 283;
+                int magicX = ((((x % 283) * (x % 283)) % 283) * (((x % 283) * (x % 283)) % 283)) % 283;
                 int magic0  = (magicX + magicY) % 255;
                 int magic1  = (magicX + magicY * 179) % 255;
                 pixelX[0]   = magic0;
@@ -1007,18 +1010,18 @@ public:
             Tensor::create<uint8_t>(std::vector<int>{1, sh, sw, 3}, nullptr, Tensor::TENSORFLOW));
         process->convert(nv12.get(), sw, sh, 0, tensor.get());
         for (int y = 0; y < sh; ++y) {
-            auto dstY    = tensor->host<uint8_t>() + 3 * y * sw;
-            auto srcY_Y  = nv12.get() + y * sw;
+            auto dstY   = tensor->host<uint8_t>() + 3 * y * sw;
+            auto srcY_Y = nv12.get() + y * sw;
             auto srcY_U = nv12.get() + (y / 2) * (sw / 2) + sw * sh;
-            auto srcY_V = nv12.get() + (y / 2) * (sw / 2) + sw * sh + (sw/2)*(sh/2);
+            auto srcY_V = nv12.get() + (y / 2) * (sw / 2) + sw * sh + (sw / 2) * (sh / 2);
             for (int x = 0; x < sw; ++x) {
-                auto dstX    = dstY + 3 * x;
-                auto srcX_Y  = srcY_Y + x;
+                auto dstX   = dstY + 3 * x;
+                auto srcX_Y = srcY_Y + x;
                 auto srcX_U = srcY_U + (x / 2);
                 auto srcX_V = srcY_V + (x / 2);
-                int Y        = srcX_Y[0];
-                int U        = (int)srcX_U[0] - 128;
-                int V        = (int)srcX_V[0] - 128;
+                int Y       = srcX_Y[0];
+                int U       = (int)srcX_U[0] - 128;
+                int V       = (int)srcX_V[0] - 128;
 
                 Y     = Y << 6;
                 int r = (Y + 73 * V) >> 6;
@@ -1041,7 +1044,7 @@ public:
         }
         {
             AUTOTIME;
-            for (int i=0; i<10; ++i) {
+            for (int i = 0; i < 10; ++i) {
                 process->convert(nv12.get(), sw, sh, 0, tensor.get());
             }
         }

@@ -8,8 +8,8 @@
 
 #include <math.h>
 
+#include "shape/SizeComputer.hpp"
 #include "core/Macro.h"
-#include "core/SizeComputer.hpp"
 
 namespace MNN {
 class PoolSizeComputer : public SizeComputer {
@@ -37,8 +37,15 @@ public:
             int w = input->width();
             int h = input->height();
             if (nullptr != layer->pads()) {
-                w = w + layer->pads()->data()[1] + layer->pads()->data()[3];
-                h = h + layer->pads()->data()[0] + layer->pads()->data()[2];
+                // pads = 2, just add padh_h, padh_l
+                if (layer->pads()->size() == 2) {
+                    h += (layer->pads()->data()[0] + layer->pads()->data()[1]);
+                }
+                // pads = 4, add padh_h, padh_l, padw_l, padw_r
+                if (layer->pads()->size() == 4) {
+                    w += (layer->pads()->data()[1] + layer->pads()->data()[3]);
+                    h += (layer->pads()->data()[0] + layer->pads()->data()[2]);
+                }
             } else {
                 w += layer->padX() * 2;
                 h += layer->padY() * 2;
@@ -66,12 +73,14 @@ public:
             return false;
         }
         auto format = TensorUtils::getDescribe(inputs[0])->dimensionFormat;
-        if (format != MNN_DATA_FORMAT_NC4HW4) {
-            return false;
+        if (format == MNN_DATA_FORMAT_NHWC) {
+            output->buffer().dim[2].extent = outw;
+            output->buffer().dim[1].extent = outh;
+        } else {
+            output->buffer().dim[3].extent = outw;
+            output->buffer().dim[2].extent = outh;
         }
-        output->buffer().dim[3].extent = outw;
-        output->buffer().dim[2].extent = outh;
-        TensorUtils::getDescribe(outputs[0])->dimensionFormat = TensorUtils::getDescribe(inputs[0])->dimensionFormat;
+        TensorUtils::getDescribe(outputs[0])->dimensionFormat = format;
         output->buffer().type          = input->buffer().type;
 
         return true;

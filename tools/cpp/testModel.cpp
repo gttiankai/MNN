@@ -57,6 +57,7 @@ MNN::Tensor* createTensor(const MNN::Tensor* shape, const char* path) {
 }
 
 int main(int argc, const char* argv[]) {
+
     // check given & expect
     const char* modelPath  = argv[1];
     const char* givenName  = argv[2];
@@ -72,6 +73,10 @@ int main(int argc, const char* argv[]) {
     if (argc > 5) {
         tolerance = stringConvert<float>(argv[5]);
     }
+    MNN::BackendConfig::PrecisionMode precision = MNN::BackendConfig::Precision_High;
+    if (argc > 6) {
+        precision = (MNN::BackendConfig::PrecisionMode)stringConvert<int>(argv[6]);
+    }
     std::shared_ptr<MNN::Interpreter> net =
         std::shared_ptr<MNN::Interpreter>(MNN::Interpreter::createFromFile(modelPath));
 
@@ -79,40 +84,53 @@ int main(int argc, const char* argv[]) {
     MNN::ScheduleConfig config;
     config.type = type;
     MNN::BackendConfig backendConfig;
-    if (type != MNN_FORWARD_CPU) {
-        // Use Precision_High for other backend
-        // Test CPU ARM v8.2 and other approciate method
-        backendConfig.precision = MNN::BackendConfig::Precision_High;
-    }
+    backendConfig.precision = precision;
     config.backendConfig = &backendConfig;
     auto session         = net->createSession(config);
-
+    
+    // input dims
+    std::vector<int> inputDims;
+    if (argc > 7) {
+        std::string inputShape(argv[7]);
+        const char* delim = "x";
+        std::ptrdiff_t p1 = 0, p2;
+        while (1) {
+            p2 = inputShape.find(delim, p1);
+            if (p2 != std::string::npos) {
+                inputDims.push_back(atoi(inputShape.substr(p1, p2 - p1).c_str()));
+                p1 = p2 + 1;
+            } else {
+                inputDims.push_back(atoi(inputShape.substr(p1).c_str()));
+                break;
+            }
+        }
+    }
+    for (auto dim : inputDims) {
+        MNN_PRINT("%d ", dim);
+    }
+    MNN_PRINT("\n");
+    
+    
     auto allInput = net->getSessionInputAll(session);
     for (auto& iter : allInput) {
-        auto size = iter.second->size();
-
-        auto bnType   = MNN_FORWARD_CPU;
-        auto tensorBn = MNN::TensorUtils::getDescribe(iter.second)->backend;
-        if (tensorBn) {
-            bnType = tensorBn->type();
+        auto inputTensor = iter.second;
+        
+        if (!inputDims.empty()) {
+            MNN_PRINT("===========> Resize Tensor...\n");
+            net->resizeTensor(inputTensor, inputDims);
+            net->resizeSession(session);
         }
-        // memory is fp16, but size == element * sizeof(float)
-        if (bnType == MNN_FORWARD_CPU_EXTENSION) {
-            size /= 2;
+        
+        auto size = inputTensor->size();
+        if (size <= 0) {
+            continue;
         }
-
-        auto ptr = iter.second->host<void>();
-        std::shared_ptr<MNN::Tensor> tempTensor;
-        if (nullptr == ptr) {
-            tempTensor = std::shared_ptr<MNN::Tensor>(MNN::Tensor::createHostTensorFromDevice(iter.second, false),
-                                                      [&iter](void* t) {
-                                                          auto hostTensor = (MNN::Tensor*)t;
-                                                          iter.second->copyFromHostTensor(hostTensor);
-                                                          delete hostTensor;
-                                                      });
-            ptr        = tempTensor->host<float>();
+        
+        void* host = inputTensor->map(MNN::Tensor::MAP_TENSOR_WRITE,  inputTensor->getDimensionType());
+        if(host != nullptr) {
+            ::memset(host, 0, inputTensor->size());
         }
-        ::memset(ptr, 0, size);
+        inputTensor->unmap(MNN::Tensor::MAP_TENSOR_WRITE,  inputTensor->getDimensionType(), host);
     }
 
     // write input tensor
@@ -127,7 +145,12 @@ int main(int argc, const char* argv[]) {
         return -1;
     }
     // First time
-    inputTensor->copyFromHostTensor(givenTensor.get());
+    void* host = inputTensor->map(MNN::Tensor::MAP_TENSOR_WRITE, givenTensor.get()->getDimensionType());
+    if(host != nullptr) {
+        ::memcpy(host, givenTensor->host<uint8_t>(), givenTensor->size());
+    }
+    inputTensor->unmap(MNN::Tensor::MAP_TENSOR_WRITE,  givenTensor.get()->getDimensionType(), host);
+
     // infer
     net->runSession(session);
     // read expect tensor
@@ -155,7 +178,12 @@ int main(int argc, const char* argv[]) {
         printf("First run pass\n");
     }
     // Run Second time
-    inputTensor->copyFromHostTensor(givenTensor.get());
+    void* host1 = inputTensor->map(MNN::Tensor::MAP_TENSOR_WRITE, givenTensor.get()->getDimensionType());
+    if(host1 != nullptr) {
+        ::memcpy(host1, givenTensor->host<uint8_t>(), givenTensor->size());
+    }
+    inputTensor->unmap(MNN::Tensor::MAP_TENSOR_WRITE,  givenTensor.get()->getDimensionType(), host1);
+
     // infer
     net->runSession(session);
     // read expect tensor

@@ -18,7 +18,7 @@ MNN::OpParameter ReduceOnnx::type() {
 }
 
 void ReduceOnnx::run(MNN::OpT *dstOp, const onnx::NodeProto *onnxNode,
-                     std::vector<const onnx::TensorProto *> initializers) {
+                     OnnxScope* scope) {
     auto param = new MNN::ReductionParamT;
 
     std::vector<int> axes;
@@ -51,8 +51,6 @@ void ReduceOnnx::run(MNN::OpT *dstOp, const onnx::NodeProto *onnxNode,
         param->operation = MNN::ReductionType_PROD;
     } else if (type == "ReduceSum") {
         param->operation = MNN::ReductionType_SUM;
-    } else if (type == "ReduceSumSquare") {
-        param->operation = MNN::ReductionType_SUMSQ;
     } else {
         DLOG(ERROR) << "TODO ==> " << type;
     }
@@ -68,4 +66,3 @@ REGISTER_CONVERTER(ReduceOnnx, ReduceMax);
 REGISTER_CONVERTER(ReduceOnnx, ReduceMin);
 REGISTER_CONVERTER(ReduceOnnx, ReduceProd);
 REGISTER_CONVERTER(ReduceOnnx, ReduceSum);
-REGISTER_CONVERTER(ReduceOnnx, ReduceSumSquare);

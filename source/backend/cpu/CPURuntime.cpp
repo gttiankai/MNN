@@ -7,7 +7,9 @@
 //
 
 /**
- Ref from https://github.com/Tencent/ncnn/blob/master/src/cpu.cpp
+ Ref from:
+ https://github.com/Tencent/ncnn/blob/master/src/cpu.cpp
+ https://github.com/pytorch/cpuinfo
  */
 #ifdef __ANDROID__
 #include <stdint.h>
@@ -15,7 +17,8 @@
 #include <unistd.h>
 #endif
 
-#if defined(__aarch64__) && defined(ENABLE_ARMV82)
+#include "core/Macro.h"
+#ifdef MNN_USE_ARMV82
 
 #ifdef __ANDROID__
 #include <fcntl.h>
@@ -23,13 +26,15 @@
 #include <sys/system_properties.h>
 #endif // __ANDROID__
 
-#endif // ENABLE_ARMV82
+#endif // MNN_USE_ARMV82
 
 #if __APPLE__
 #include "TargetConditionals.h"
+#if __aarch64__
+#include <sys/sysctl.h>
+#endif
 #if TARGET_OS_IPHONE
 #include <mach/machine.h>
-#include <sys/sysctl.h>
 #include <sys/types.h>
 #define __IOS__ 1
 #endif // TARGET_OS_IPHONE
@@ -47,6 +52,98 @@
 #include "backend/cpu/CPURuntime.hpp"
 
 #ifdef __ANDROID__
+
+/* As per include/sys/system_properties.h in Android NDK */
+#define CPUINFO_HARDWARE_VALUE_MAX 64
+#define CPUINFO_BUILD_PROP_VALUE_MAX 92
+
+struct cpuinfo_android_properties {
+    char proc_cpuinfo_hardware[CPUINFO_HARDWARE_VALUE_MAX];
+    char ro_product_board[CPUINFO_BUILD_PROP_VALUE_MAX];
+    char ro_board_platform[CPUINFO_BUILD_PROP_VALUE_MAX];
+    char ro_mediatek_platform[CPUINFO_BUILD_PROP_VALUE_MAX];
+    char ro_arch[CPUINFO_BUILD_PROP_VALUE_MAX];
+    char ro_chipname[CPUINFO_BUILD_PROP_VALUE_MAX];
+    char ro_hardware_chipname[CPUINFO_BUILD_PROP_VALUE_MAX];
+};
+
+enum cpuinfo_android_chipset_property {
+    cpuinfo_android_chipset_property_proc_cpuinfo_hardware = 0,
+    cpuinfo_android_chipset_property_ro_product_board,
+    cpuinfo_android_chipset_property_ro_board_platform,
+    cpuinfo_android_chipset_property_ro_mediatek_platform,
+    cpuinfo_android_chipset_property_ro_arch,
+    cpuinfo_android_chipset_property_ro_chipname,
+    cpuinfo_android_chipset_property_ro_hardware_chipname,
+    cpuinfo_android_chipset_property_max,
+};
+
+enum cpuinfo_arm_chipset_vendor {
+    cpuinfo_arm_chipset_vendor_unknown = 0,
+    cpuinfo_arm_chipset_vendor_qualcomm,
+    cpuinfo_arm_chipset_vendor_mediatek,
+    cpuinfo_arm_chipset_vendor_samsung,
+    cpuinfo_arm_chipset_vendor_hisilicon,
+    cpuinfo_arm_chipset_vendor_actions,
+    cpuinfo_arm_chipset_vendor_allwinner,
+    cpuinfo_arm_chipset_vendor_amlogic,
+    cpuinfo_arm_chipset_vendor_broadcom,
+    cpuinfo_arm_chipset_vendor_lg,
+    cpuinfo_arm_chipset_vendor_leadcore,
+    cpuinfo_arm_chipset_vendor_marvell,
+    cpuinfo_arm_chipset_vendor_mstar,
+    cpuinfo_arm_chipset_vendor_novathor,
+    cpuinfo_arm_chipset_vendor_nvidia,
+    cpuinfo_arm_chipset_vendor_pinecone,
+    cpuinfo_arm_chipset_vendor_renesas,
+    cpuinfo_arm_chipset_vendor_rockchip,
+    cpuinfo_arm_chipset_vendor_spreadtrum,
+    cpuinfo_arm_chipset_vendor_telechips,
+    cpuinfo_arm_chipset_vendor_texas_instruments,
+    cpuinfo_arm_chipset_vendor_wondermedia,
+    cpuinfo_arm_chipset_vendor_max,
+};
+
+enum cpuinfo_arm_chipset_series {
+    cpuinfo_arm_chipset_series_unknown = 0,
+    cpuinfo_arm_chipset_series_qualcomm_qsd,
+    cpuinfo_arm_chipset_series_qualcomm_msm,
+    cpuinfo_arm_chipset_series_qualcomm_apq,
+    cpuinfo_arm_chipset_series_qualcomm_snapdragon,
+    cpuinfo_arm_chipset_series_mediatek_mt,
+    cpuinfo_arm_chipset_series_samsung_exynos,
+    cpuinfo_arm_chipset_series_hisilicon_k3v,
+    cpuinfo_arm_chipset_series_hisilicon_hi,
+    cpuinfo_arm_chipset_series_hisilicon_kirin,
+    cpuinfo_arm_chipset_series_actions_atm,
+    cpuinfo_arm_chipset_series_allwinner_a,
+    cpuinfo_arm_chipset_series_amlogic_aml,
+    cpuinfo_arm_chipset_series_amlogic_s,
+    cpuinfo_arm_chipset_series_broadcom_bcm,
+    cpuinfo_arm_chipset_series_lg_nuclun,
+    cpuinfo_arm_chipset_series_leadcore_lc,
+    cpuinfo_arm_chipset_series_marvell_pxa,
+    cpuinfo_arm_chipset_series_mstar_6a,
+    cpuinfo_arm_chipset_series_novathor_u,
+    cpuinfo_arm_chipset_series_nvidia_tegra_t,
+    cpuinfo_arm_chipset_series_nvidia_tegra_ap,
+    cpuinfo_arm_chipset_series_nvidia_tegra_sl,
+    cpuinfo_arm_chipset_series_pinecone_surge_s,
+    cpuinfo_arm_chipset_series_renesas_mp,
+    cpuinfo_arm_chipset_series_rockchip_rk,
+    cpuinfo_arm_chipset_series_spreadtrum_sc,
+    cpuinfo_arm_chipset_series_telechips_tcc,
+    cpuinfo_arm_chipset_series_texas_instruments_omap,
+    cpuinfo_arm_chipset_series_wondermedia_wm,
+    cpuinfo_arm_chipset_series_max,
+};
+
+struct cpuinfo_arm_chipset {
+    enum cpuinfo_arm_chipset_vendor vendor;
+    enum cpuinfo_arm_chipset_series series;
+    uint32_t model;
+    char suffix[8];
+};
 
 #define BUFFER_SIZE 1024
 
@@ -272,7 +369,7 @@ float MNNGetCPUFlops(uint32_t number) {
 // cpuinfo
 // Reference from: https://github.com/pytorch/cpuinfo
 
-#if defined(__aarch64__) && defined(ENABLE_ARMV82)
+#ifdef MNN_USE_ARMV82
 
 #ifdef __ANDROID__
 
@@ -297,9 +394,14 @@ float MNNGetCPUFlops(uint32_t number) {
 #define CPUINFO_ARM_MIDR_PART_OFFSET 4
 #define CPUINFO_ARM_MIDR_REVISION_OFFSET 0
 
+#ifdef __aarch64__
 #define CPUINFO_ARM_LINUX_FEATURE_FPHP UINT32_C(0x00000200)
 #define CPUINFO_ARM_LINUX_FEATURE_ASIMDHP UINT32_C(0x00000400)
 #define CPUINFO_ARM_LINUX_FEATURE_ASIMDDP UINT32_C(0x00100000)
+#else
+#define CPUINFO_ARM_LINUX_FEATURE_HALF     UINT32_C(0x00000002)
+#define CPUINFO_ARM_LINUX_FEATURE_NEON     UINT32_C(0x00001000)
+#endif
 
 struct cpuinfo_arm_linux_processor {
     uint32_t architecture_version;
@@ -347,8 +449,8 @@ inline static uint32_t midr_set_variant(uint32_t midr, uint32_t variant) {
            ((variant << CPUINFO_ARM_MIDR_VARIANT_OFFSET) & CPUINFO_ARM_MIDR_VARIANT_MASK);
 }
 
-uint32_t cpuinfo_arm_linux_hwcap_from_getauxval(void) {
-    return (uint32_t)getauxval(AT_HWCAP);
+inline static uint32_t midr_get_variant(uint32_t midr) {
+    return (midr & CPUINFO_ARM_MIDR_VARIANT_MASK) >> CPUINFO_ARM_MIDR_VARIANT_OFFSET;
 }
 
 static inline bool bitmask_all(uint32_t bitfield, uint32_t mask) {
@@ -667,11 +769,6 @@ static bool parse_line(const char* line_start, const char* line_end, struct proc
     const size_t key_length = key_end - line_start;
     switch (key_length) {
         case 6:
-            if (memcmp(line_start, "Serial", key_length) == 0) {
-                /* Usually contains just zeros, useless */
-            } else {
-                MNN_PRINT("unknown /proc/cpuinfo key: %.*s\n", (int)key_length, line_start);
-            }
             break;
         case 8:
             if (memcmp(line_start, "CPU part", key_length) == 0) {
@@ -695,8 +792,6 @@ static bool parse_line(const char* line_start, const char* line_end, struct proc
                 MNN_PRINT("parsed /proc/cpuinfo Hardware = \"%.*s\"\n", (int)value_length, value_start);
             } else if (memcmp(line_start, "Revision", key_length) == 0) {
                 /* Board revision, no use for now */
-            } else {
-                MNN_PRINT("unknown /proc/cpuinfo key: %.*s\n", (int)key_length, line_start);
             }
             break;
         case 9:
@@ -723,22 +818,16 @@ static bool parse_line(const char* line_start, const char* line_end, struct proc
                 return true;
             } else if (memcmp(line_start, "Processor", key_length) == 0) {
                 /* TODO: parse to fix misreported architecture, similar to Android's cpufeatures */
-            } else {
-                MNN_PRINT("unknown /proc/cpuinfo key: %.*s\n", (int)key_length, line_start);
             }
             break;
         case 11:
             if (memcmp(line_start, "CPU variant", key_length) == 0) {
                 parse_cpu_variant(value_start, value_end, processor);
-            } else {
-                MNN_PRINT("unknown /proc/cpuinfo key: %.*s\n", (int)key_length, line_start);
             }
             break;
         case 12:
             if (memcmp(line_start, "CPU revision", key_length) == 0) {
                 parse_cpu_revision(value_start, value_end, processor);
-            } else {
-                MNN_PRINT("unknown /proc/cpuinfo key: %.*s\n", (int)key_length, line_start);
             }
             break;
         case 15:
@@ -746,19 +835,15 @@ static bool parse_line(const char* line_start, const char* line_end, struct proc
                 parse_cpu_implementer(value_start, value_end, processor);
             } else if (memcmp(line_start, "CPU implementor", key_length) == 0) {
                 parse_cpu_implementer(value_start, value_end, processor);
-            } else {
-                MNN_PRINT("unknown /proc/cpuinfo key: %.*s\n", (int)key_length, line_start);
             }
             break;
         case 16:
             if (memcmp(line_start, "CPU architecture", key_length) == 0) {
                 parse_cpu_architecture(value_start, value_end, processor);
-            } else {
-                MNN_PRINT("unknown /proc/cpuinfo key: %.*s\n", (int)key_length, line_start);
             }
             break;
         default:
-            MNN_PRINT("unknown /proc/cpuinfo key: %.*s\n", (int)key_length, line_start);
+            break;
     }
     return true;
 }
@@ -868,43 +953,6 @@ void cpuinfo_arm_android_parse_properties(struct cpuinfo_android_properties* pro
     cpuinfo_android_property_get("ro.chipname", properties->ro_chipname);
     cpuinfo_android_property_get("ro.hardware.chipname", properties->ro_hardware_chipname);
 }
-
-/*
- * Map from ARM chipset series ID to ARM chipset vendor ID.
- * This map is used to avoid storing vendor IDs in tables.
- */
-static enum cpuinfo_arm_chipset_vendor chipset_series_vendor[cpuinfo_arm_chipset_series_max] = {
-    [cpuinfo_arm_chipset_series_unknown]                = cpuinfo_arm_chipset_vendor_unknown,
-    [cpuinfo_arm_chipset_series_qualcomm_qsd]           = cpuinfo_arm_chipset_vendor_qualcomm,
-    [cpuinfo_arm_chipset_series_qualcomm_msm]           = cpuinfo_arm_chipset_vendor_qualcomm,
-    [cpuinfo_arm_chipset_series_qualcomm_apq]           = cpuinfo_arm_chipset_vendor_qualcomm,
-    [cpuinfo_arm_chipset_series_qualcomm_snapdragon]    = cpuinfo_arm_chipset_vendor_qualcomm,
-    [cpuinfo_arm_chipset_series_mediatek_mt]            = cpuinfo_arm_chipset_vendor_mediatek,
-    [cpuinfo_arm_chipset_series_samsung_exynos]         = cpuinfo_arm_chipset_vendor_samsung,
-    [cpuinfo_arm_chipset_series_hisilicon_k3v]          = cpuinfo_arm_chipset_vendor_hisilicon,
-    [cpuinfo_arm_chipset_series_hisilicon_hi]           = cpuinfo_arm_chipset_vendor_hisilicon,
-    [cpuinfo_arm_chipset_series_hisilicon_kirin]        = cpuinfo_arm_chipset_vendor_hisilicon,
-    [cpuinfo_arm_chipset_series_actions_atm]            = cpuinfo_arm_chipset_vendor_actions,
-    [cpuinfo_arm_chipset_series_allwinner_a]            = cpuinfo_arm_chipset_vendor_allwinner,
-    [cpuinfo_arm_chipset_series_amlogic_aml]            = cpuinfo_arm_chipset_vendor_amlogic,
-    [cpuinfo_arm_chipset_series_amlogic_s]              = cpuinfo_arm_chipset_vendor_amlogic,
-    [cpuinfo_arm_chipset_series_broadcom_bcm]           = cpuinfo_arm_chipset_vendor_broadcom,
-    [cpuinfo_arm_chipset_series_lg_nuclun]              = cpuinfo_arm_chipset_vendor_lg,
-    [cpuinfo_arm_chipset_series_leadcore_lc]            = cpuinfo_arm_chipset_vendor_leadcore,
-    [cpuinfo_arm_chipset_series_marvell_pxa]            = cpuinfo_arm_chipset_vendor_marvell,
-    [cpuinfo_arm_chipset_series_mstar_6a]               = cpuinfo_arm_chipset_vendor_mstar,
-    [cpuinfo_arm_chipset_series_novathor_u]             = cpuinfo_arm_chipset_vendor_novathor,
-    [cpuinfo_arm_chipset_series_nvidia_tegra_t]         = cpuinfo_arm_chipset_vendor_nvidia,
-    [cpuinfo_arm_chipset_series_nvidia_tegra_ap]        = cpuinfo_arm_chipset_vendor_nvidia,
-    [cpuinfo_arm_chipset_series_nvidia_tegra_sl]        = cpuinfo_arm_chipset_vendor_nvidia,
-    [cpuinfo_arm_chipset_series_pinecone_surge_s]       = cpuinfo_arm_chipset_vendor_pinecone,
-    [cpuinfo_arm_chipset_series_renesas_mp]             = cpuinfo_arm_chipset_vendor_renesas,
-    [cpuinfo_arm_chipset_series_rockchip_rk]            = cpuinfo_arm_chipset_vendor_rockchip,
-    [cpuinfo_arm_chipset_series_spreadtrum_sc]          = cpuinfo_arm_chipset_vendor_spreadtrum,
-    [cpuinfo_arm_chipset_series_telechips_tcc]          = cpuinfo_arm_chipset_vendor_telechips,
-    [cpuinfo_arm_chipset_series_texas_instruments_omap] = cpuinfo_arm_chipset_vendor_texas_instruments,
-    [cpuinfo_arm_chipset_series_wondermedia_wm]         = cpuinfo_arm_chipset_vendor_wondermedia,
-};
 
 static inline uint16_t load_u16le(const void* ptr) {
     return *((const uint16_t*)ptr);
@@ -1228,15 +1276,15 @@ struct cpuinfo_arm_chipset cpuinfo_arm_android_decode_chipset(const struct cpuin
             if (vendor == cpuinfo_arm_chipset_vendor_unknown) {
                 vendor = decoded_vendor;
             } else if (vendor != decoded_vendor) {
-                MNN_PRINT(
-                    "[MNN WARNING] chipset detection failed: different chipset vendors reported in different system "
-                    "properties\n");
+//                MNN_PRINT(
+//                    "[MNN WARNING] chipset detection failed: different chipset vendors reported in different system "
+//                    "properties\n");
                 return chipset;
             }
         }
     }
     if (vendor == cpuinfo_arm_chipset_vendor_unknown) {
-        MNN_PRINT("[MNN WARNING] chipset detection failed: none of the system properties matched known signatures\n");
+//        MNN_PRINT("[MNN WARNING] chipset detection failed: none of the system properties matched known signatures\n");
         return chipset;
     }
 
@@ -1253,7 +1301,7 @@ struct cpuinfo_arm_chipset cpuinfo_arm_android_decode_chipset(const struct cpuin
 
 #endif // __ANDROID__
 
-#if defined(__IOS__) && defined(__aarch64__)
+#if defined(__APPLE__) && defined(__aarch64__)
 
 static uint32_t get_sys_info_by_name(const char* type_specifier) {
     size_t size     = 0;
@@ -1312,7 +1360,10 @@ void cpuinfo_arm_init(struct cpuinfo_arm_isa* cpuinfo_isa) {
         }
     }
 
-    const uint32_t isa_features = cpuinfo_arm_linux_hwcap_from_getauxval();
+    uint32_t isa_features = 0;
+#ifdef __aarch64__
+    isa_features = (uint32_t)getauxval(AT_HWCAP);
+#endif
 
     struct cpuinfo_android_properties android_properties;
     cpuinfo_arm_android_parse_properties(&android_properties);
@@ -1324,13 +1375,15 @@ void cpuinfo_arm_init(struct cpuinfo_arm_isa* cpuinfo_isa) {
             cpuinfo_isa->dot = true;
             break;
         default:
+#ifdef __aarch64__
             if (isa_features & CPUINFO_ARM_LINUX_FEATURE_ASIMDDP) {
                 cpuinfo_isa->dot = true;
             }
+#endif
             // TODO, whitelist, ex: hisilicon_kirin 980...
             break;
     }
-
+#ifdef __aarch64__
     const uint32_t fp16arith_mask = CPUINFO_ARM_LINUX_FEATURE_FPHP | CPUINFO_ARM_LINUX_FEATURE_ASIMDHP;
     if ((isa_features & fp16arith_mask) == fp16arith_mask) {
         if (chipset.series == cpuinfo_arm_chipset_series_samsung_exynos && chipset.model == 9810) {
@@ -1338,6 +1391,74 @@ void cpuinfo_arm_init(struct cpuinfo_arm_isa* cpuinfo_isa) {
         } else {
             cpuinfo_isa->fp16arith = true;
         }
+    }
+#else
+    // pytorch/cpuinfo: src/arm/linux/aarch32-isa.c
+    uint32_t architecture_version = 0;
+    if (processors_count > 0) {
+        architecture_version = arm_linux_processors[0].architecture_version;
+    }
+    if (architecture_version >= 8) {
+        /*
+         * NEON FP16 compute extension and VQRDMLAH/VQRDMLSH instructions are not indicated in /proc/cpuinfo.
+         * Use a MIDR-based heuristic to whitelist processors known to support it:
+         * - Processors with Cortex-A55 cores
+         * - Processors with Cortex-A65 cores
+         * - Processors with Cortex-A75 cores
+         * - Processors with Cortex-A76 cores
+         * - Processors with Cortex-A77 cores
+         * - Processors with Exynos M4 cores
+         * - Processors with Exynos M5 cores
+         * - Neoverse N1 cores
+         */
+        if (chipset.series == cpuinfo_arm_chipset_series_samsung_exynos && chipset.model == 9810) {
+            /* Only little cores of Exynos 9810 support FP16 & RDM */
+            MNN_PRINT("FP16 arithmetics and RDM disabled: only little cores in Exynos 9810 support these extensions");
+        } else {
+            switch (last_midr & (CPUINFO_ARM_MIDR_IMPLEMENTER_MASK | CPUINFO_ARM_MIDR_PART_MASK)) {
+                case UINT32_C(0x4100D050): /* Cortex-A55 */
+                case UINT32_C(0x4100D060): /* Cortex-A65 */
+                case UINT32_C(0x4100D0B0): /* Cortex-A76 */
+                case UINT32_C(0x4100D0C0): /* Neoverse N1 */
+                case UINT32_C(0x4100D0D0): /* Cortex-A77 */
+                case UINT32_C(0x4100D0E0): /* Cortex-A76AE */
+                case UINT32_C(0x4800D400): /* Cortex-A76 (HiSilicon) */
+                case UINT32_C(0x51008020): /* Kryo 385 Gold (Cortex-A75) */
+                case UINT32_C(0x51008030): /* Kryo 385 Silver (Cortex-A55) */
+                case UINT32_C(0x51008040): /* Kryo 485 Gold (Cortex-A76) */
+                case UINT32_C(0x51008050): /* Kryo 485 Silver (Cortex-A55) */
+                case UINT32_C(0x53000030): /* Exynos M4 */
+                case UINT32_C(0x53000040): /* Exynos M5 */
+                    cpuinfo_isa->fp16arith = true;
+                    break;
+            }
+        }
+        /*
+         * NEON VDOT instructions are not indicated in /proc/cpuinfo.
+         * Use a MIDR-based heuristic to whitelist processors known to support it.
+         */
+        switch (last_midr & (CPUINFO_ARM_MIDR_IMPLEMENTER_MASK | CPUINFO_ARM_MIDR_PART_MASK)) {
+            case UINT32_C(0x4100D0B0): /* Cortex-A76 */
+            case UINT32_C(0x4100D0D0): /* Cortex-A77 */
+            case UINT32_C(0x4100D0E0): /* Cortex-A76AE */
+            case UINT32_C(0x4800D400): /* Cortex-A76 (HiSilicon) */
+            case UINT32_C(0x51008040): /* Kryo 485 Gold (Cortex-A76) */
+            case UINT32_C(0x51008050): /* Kryo 485 Silver (Cortex-A55) */
+            case UINT32_C(0x53000030): /* Exynos-M4 */
+            case UINT32_C(0x53000040): /* Exynos-M5 */
+                cpuinfo_isa->dot = true;
+                break;
+            case UINT32_C(0x4100D050): /* Cortex A55: revision 1 or later only */
+                cpuinfo_isa->dot = (midr_get_variant(last_midr) >= 1);
+                break;
+            case UINT32_C(0x4100D0A0): /* Cortex A75: revision 2 or later only */
+                cpuinfo_isa->dot = (midr_get_variant(last_midr) >= 2);
+                break;
+        }
+    }
+#endif
+    if (arm_linux_processors) {
+        free(arm_linux_processors);
     }
 
 #endif // #ifdef __ANDROID__
@@ -1357,6 +1478,14 @@ void cpuinfo_arm_init(struct cpuinfo_arm_isa* cpuinfo_isa) {
 #ifndef CPUFAMILY_ARM_LIGHTNING_THUNDER
 #define CPUFAMILY_ARM_LIGHTNING_THUNDER 0x462504d2
 #endif
+// A14
+#ifndef CPUFAMILY_ARM_FIRESTORM_ICESTORM
+#define CPUFAMILY_ARM_FIRESTORM_ICESTORM 0x1b588bb3
+#endif
+// A15
+#ifndef CPUFAMILY_ARM_AVALANCHE_BLIZZARD
+#define CPUFAMILY_ARM_AVALANCHE_BLIZZARD 0xda33d83d
+#endif
 
     const uint32_t cpu_family = get_sys_info_by_name("hw.cpufamily");
     // const uint32_t cpu_type = get_sys_info_by_name("hw.cputype");
@@ -1364,11 +1493,26 @@ void cpuinfo_arm_init(struct cpuinfo_arm_isa* cpuinfo_isa) {
 
     cpuinfo_isa->fp16arith = cpu_family == CPUFAMILY_ARM_MONSOON_MISTRAL ||
                              cpu_family == CPUFAMILY_ARM_VORTEX_TEMPEST ||
-                             cpu_family == CPUFAMILY_ARM_LIGHTNING_THUNDER;
+                             cpu_family == CPUFAMILY_ARM_LIGHTNING_THUNDER ||
+                             cpu_family == CPUFAMILY_ARM_FIRESTORM_ICESTORM ||
+                             cpu_family == CPUFAMILY_ARM_AVALANCHE_BLIZZARD;
 
-    cpuinfo_isa->dot = cpu_family == CPUFAMILY_ARM_LIGHTNING_THUNDER;
+    cpuinfo_isa->dot = cpu_family == CPUFAMILY_ARM_LIGHTNING_THUNDER ||
+                       cpu_family == CPUFAMILY_ARM_FIRESTORM_ICESTORM ||
+                       cpu_family == CPUFAMILY_ARM_AVALANCHE_BLIZZARD;
 
 #endif // iOS
+
+// arm64-osx
+#if defined(__APPLE__) && defined(__aarch64__) && !defined(__IOS__)   
+#ifndef CPUFAMILY_AARCH64_FIRESTORM_ICESTORM
+#define CPUFAMILY_AARCH64_FIRESTORM_ICESTORM 0x1b588bb3
+#endif
+    const uint32_t cpu_family = get_sys_info_by_name("hw.cpufamily");
+    cpuinfo_isa->fp16arith = cpu_family == CPUFAMILY_AARCH64_FIRESTORM_ICESTORM;
+    cpuinfo_isa->dot = cpu_family == CPUFAMILY_AARCH64_FIRESTORM_ICESTORM;
+#endif
+    MNN_PRINT("The device support dot:%d, support fp16:%d\n", cpuinfo_isa->dot, cpuinfo_isa->fp16arith);
 }
 
-#endif // ENABLE_ARMV82
+#endif // MNN_USE_ARMV82

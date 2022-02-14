@@ -17,11 +17,11 @@ VulkanSampler::~VulkanSampler() {
     mDevice.destroySampler(mSampler);
 }
 void VulkanImage::release() {
-    if (mReleased) {
+    if (nullptr == mMemory.first) {
         return;
     }
-    mReleased = true;
     const_cast<VulkanMemoryPool&>(mPool).returnMemory(mMemory);
+    mMemory.first = nullptr;
 }
 
 static VkFormat _getFormat(halide_type_t type) {
@@ -56,9 +56,9 @@ VulkanImage::VulkanImage(const VulkanMemoryPool& pool, bool seperate, const std:
     auto imageType = VK_IMAGE_TYPE_1D;
     auto viewType  = VK_IMAGE_VIEW_TYPE_1D;
     mDims          = dims;
-    mWidth         = dims[0];
-    mHeight        = 1;
-    mDepth         = 1;
+    auto mWidth         = dims[0];
+    auto mHeight        = 1;
+    auto mDepth         = 1;
     if (dims.size() > 1) {
         mHeight   = dims[1];
         imageType = VK_IMAGE_TYPE_2D;
@@ -75,27 +75,72 @@ VulkanImage::VulkanImage(const VulkanMemoryPool& pool, bool seperate, const std:
         // Use fp16 instead of fp32
         format = VK_FORMAT_R16G16B16A16_SFLOAT;
     }
-    mFormat     = format;
+    auto mFormat     = format;
+    mInfo = std::make_tuple(imageType, mWidth, mHeight, mDepth, mFormat);
     // FUNC_PRINT(format);
-    CALL_VK(mDevice.createImage(mImage, imageType, mWidth, mHeight, mDepth, format));
+    mImage.first = const_cast<VulkanMemoryPool&>(mPool).allocImage(mInfo);
     mLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
+    mAccess = VK_ACCESS_SHADER_READ_BIT;
     VkMemoryRequirements memRequirements;
-    mDevice.getImageMemoryRequirements(mImage, memRequirements);
+    mDevice.getImageMemoryRequirements(mImage.first, memRequirements);
 
     mMemory = const_cast<VulkanMemoryPool&>(mPool).allocMemory(memRequirements, 0, seperate);
     //        FUNC_PRINT(mMemory->type());
-
-    mDevice.bindImageMemory(mImage, mMemory->get());
-
-    CALL_VK(mDevice.createImageView(mImageView, mImage, viewType, format));
+    auto realMem = (VulkanMemory*)mMemory.first;
+    mDevice.bindImageMemory(mImage.first, realMem->get(), mMemory.second);
+    CALL_VK(mDevice.createImageView(mImage.second, mImage.first, viewType, format));
 }
 VulkanImage::~VulkanImage() {
-    mDevice.destroyImageView(mImageView);
-    mDevice.destroyImage(mImage);
-    if (!mReleased) {
-        const_cast<VulkanMemoryPool&>(mPool).returnMemory(mMemory, true);
+    mDevice.destroyImageView(mImage.second, nullptr);
+    const_cast<VulkanMemoryPool&>(mPool).returnImage(std::move(mImage.first), std::move(mInfo));
+    if (nullptr != mMemory.first) {
+        const_cast<VulkanMemoryPool&>(mPool).returnMemory(mMemory);
     }
 }
+void VulkanImage::barrierWrite(VkCommandBuffer buffer) const {
+    VkImageMemoryBarrier barrier;
+    ::memset(&barrier, 0, sizeof(VkImageMemoryBarrier));
+
+    barrier.sType                       = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.dstQueueFamilyIndex         = VK_QUEUE_FAMILY_IGNORED;
+    barrier.srcQueueFamilyIndex         = VK_QUEUE_FAMILY_IGNORED;
+    barrier.srcAccessMask               = mAccess;
+    barrier.dstAccessMask               = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.image                       = mImage.first;
+    barrier.newLayout                   = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.oldLayout                   = mLayout;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.layerCount = 1;
+
+    vkCmdPipelineBarrier(buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
+                         nullptr, 0, nullptr, 1, &barrier);
+    mLayout = VK_IMAGE_LAYOUT_GENERAL;
+    mAccess = VK_ACCESS_SHADER_WRITE_BIT;
+}
+void VulkanImage::barrierRead(VkCommandBuffer buffer) const {
+    if (mAccess == VK_ACCESS_SHADER_READ_BIT && mLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        return;
+    }
+    VkImageMemoryBarrier barrier;
+    ::memset(&barrier, 0, sizeof(VkImageMemoryBarrier));
+
+    barrier.sType                       = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.dstQueueFamilyIndex         = VK_QUEUE_FAMILY_IGNORED;
+    barrier.srcQueueFamilyIndex         = VK_QUEUE_FAMILY_IGNORED;
+    barrier.srcAccessMask               = mAccess;
+    barrier.dstAccessMask               = VK_ACCESS_SHADER_READ_BIT;
+    barrier.image                       = mImage.first;
+    barrier.newLayout                   = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.oldLayout                   = mLayout;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
+                         nullptr, 0, nullptr, 1, &barrier);
+    mLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    mAccess = VK_ACCESS_SHADER_READ_BIT;
+}
+
 
 } // namespace MNN

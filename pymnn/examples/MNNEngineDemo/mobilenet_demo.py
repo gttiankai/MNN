@@ -8,6 +8,9 @@ import cv2
 def inference():
     """ inference mobilenet_v1 using a specific picture """
     interpreter = MNN.Interpreter("mobilenet_v1.mnn")
+    interpreter.setCacheFile('.tempcache')
+    config = {}
+    config['precision'] = 'low'
     session = interpreter.createSession()
     input_tensor = interpreter.getSessionInput(session)
     image = cv2.imread('ILSVRC2012_val_00049999.JPEG')
@@ -30,7 +33,7 @@ def inference():
     output_tensor = interpreter.getSessionOutput(session)
     #constuct a tmp tensor and copy/convert in case output_tensor is nc4hw4
     tmp_output = MNN.Tensor((1, 1001), MNN.Halide_Type_Float, np.ones([1, 1001]).astype(np.float32), MNN.Tensor_DimensionType_Caffe)
-    output_tensor.copyToHostTensor(tmp_output) 
+    output_tensor.copyToHostTensor(tmp_output)
     print("expect 983")
     print("output belong to class: {}".format(np.argmax(tmp_output.getData())))
 if __name__ == "__main__":

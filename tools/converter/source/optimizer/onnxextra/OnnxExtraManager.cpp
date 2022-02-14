@@ -7,11 +7,12 @@
 //
 
 #include "OnnxExtraManager.hpp"
+#include "OpCount.hpp"
 #include "MNN_generated.h"
 namespace MNN {
 namespace Express {
-std::shared_ptr<OnnxExtraManager> OnnxExtraManager::gInstance;
 std::shared_ptr<OnnxExtraManager> OnnxExtraManager::get() {
+    static std::shared_ptr<OnnxExtraManager> gInstance;
     if (nullptr == gInstance) {
         gInstance.reset(new OnnxExtraManager);
     }
@@ -20,6 +21,7 @@ std::shared_ptr<OnnxExtraManager> OnnxExtraManager::get() {
 
 void OnnxExtraManager::insert(const std::string& name, std::shared_ptr<Transform> transform) {
     mTransform.insert(std::make_pair(name, transform));
+    OpCount::get()->insertOp("ONNX", name);
 }
 std::shared_ptr<OnnxExtraManager::Transform> OnnxExtraManager::find(const std::string& name) const {
     auto iter = mTransform.find(name);
@@ -28,7 +30,6 @@ std::shared_ptr<OnnxExtraManager::Transform> OnnxExtraManager::find(const std::s
     }
     return iter->second;
 }
-
 
 static auto gRegister = []() {
     auto extra = OnnxExtraManager::get();
@@ -53,12 +54,13 @@ static auto gRegister = []() {
     auto modify = [extra](EXPRP expr) {
         auto op = expr->get();
         MNN_ASSERT(op->type() == OpType_Extra);
-        auto type   = op->main_as_Extra()->type()->str();
+        auto type        = op->main_as_Extra()->type()->str();
         auto transformer = extra->find(type);
         MNN_ASSERT(nullptr != transformer);
         auto newExpr = transformer->onExecute(expr);
         if (nullptr == newExpr) {
-            MNN_ERROR("Convert Onnx's Op %s , type = %s, failed, may be some node is not const\n", expr->name().c_str(), type.c_str());
+            MNN_ERROR("Convert Onnx's Op %s , type = %s, failed, may be some node is not const\n", expr->name().c_str(),
+                      type.c_str());
             return false;
         }
         Expr::replace(expr, newExpr);
@@ -67,5 +69,5 @@ static auto gRegister = []() {
     TemplateMerge::getInstance("OnnxExtra").insertTemplate("OnnxExtraManager", judge, modify);
     return true;
 }();
-}
-}
+} // namespace Express
+} // namespace MNN

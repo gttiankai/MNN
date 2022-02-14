@@ -7,9 +7,63 @@
 //
 
 #include "backend/cpu/CPUCast.hpp"
+#include "core/TensorUtils.hpp"
 #include "core/Macro.h"
+#include "backend/cpu/compute/Int8FunctionsOpt.h"
+#include "compute/CommonOptFunction.h"
+#include <cmath>
 
 namespace MNN {
+ErrorCode CPUCastCreator::cast(void* const inputRaw, void* outputRaw, ConvertType type,
+                               int number, float scale, float zero, float min, float max, const CPUBackend* bn) {
+    auto pack = bn->functions()->pack;
+    int c4Size = number / pack;
+    int remain = number % pack;
+    if (type == FlOAT_TO_INT8) {
+        scale = (scale == 0.f ? 0.f : 1.f / scale);
+        std::vector<float> scales(pack, scale);
+        bn->int8Functions()->MNNFloat2Int8(static_cast<float*>(inputRaw), static_cast<int8_t*>(outputRaw), c4Size, scales.data(), min, max, zero);
+        if (remain > 0) {
+            std::vector<float> tempSrc(pack);
+            std::vector<int8_t> tempDst(pack);
+            ::memcpy(tempSrc.data(), static_cast<float* const>(inputRaw) + c4Size * pack, remain * sizeof(float));
+            bn->int8Functions()->MNNFloat2Int8(tempSrc.data(), tempDst.data(), 1, scales.data(), min, max, zero);
+            ::memcpy(static_cast<int8_t*>(outputRaw) + c4Size * pack, tempDst.data(), remain * sizeof(int8_t));
+        }
+        return NO_ERROR;
+    }
+    if (type == INT8_TO_FlOAT) {
+        std::vector<float> scales(pack, scale);
+        bn->int8Functions()->MNNInt8ScaleToFloat(static_cast<float*>(outputRaw), static_cast<int8_t*>(inputRaw), scales.data(), c4Size, zero);
+        if (remain > 0) {
+            std::vector<float> tempDst(pack);
+            std::vector<int8_t> tempSrc(pack);
+            ::memcpy(tempSrc.data(), static_cast<int8_t* const>(inputRaw) + c4Size * pack, remain * sizeof(int8_t));
+            bn->int8Functions()->MNNInt8ScaleToFloat(tempDst.data(), tempSrc.data(), scales.data(), 1, zero);
+            ::memcpy(static_cast<float*>(outputRaw) + c4Size * pack, tempDst.data(), remain * sizeof(float));
+        }
+        return NO_ERROR;
+    }
+    MNN_ERROR("Don't support cast type \n");
+    return NOT_SUPPORT;
+}
+
+ErrorCode CPUCastCreator::cast(const Tensor* input, const Tensor* output, const CPUBackend* bn, ConvertType type) {
+    auto& ib     = input->buffer();
+    auto& ob     = output->buffer();
+    int totalSize = bn->getTensorSize(input);
+    auto quantAttr = TensorUtils::getDescribe(input)->quantAttr;
+    if (quantAttr == nullptr) {
+        MNN_ERROR("No quant info for Cast\n");
+        return INVALID_VALUE;
+    }
+    auto code = cast(ib.host, ob.host, type, totalSize, quantAttr->scale, quantAttr->zero, quantAttr->min, quantAttr->max, bn);
+    if (NO_ERROR != code) {
+        MNN_ERROR("Error in CPUCast\n");
+        return code;
+    }
+    return NO_ERROR;
+}
 
 template <typename srcT, typename dstT>
 class CastDataType : public Execution {
@@ -25,8 +79,7 @@ public:
         auto srcData              = input->host<srcT>();
         auto dstData              = output->host<dstT>();
         const auto inputDataSize  = input->elementSize();
-        const auto outputDataSize = output->elementSize();
-        MNN_ASSERT(inputDataSize == outputDataSize);
+        MNN_ASSERT(inputDataSize == output->elementSize());
         for (int i = 0; i < inputDataSize; i++) {
             dstData[i] = static_cast<dstT>(srcData[i]);
         }
@@ -46,8 +99,7 @@ public:
         auto srcData              = input->host<int>();
         auto dstData              = output->host<int>();
         const auto inputDataSize  = input->elementSize();
-        const auto outputDataSize = output->elementSize();
-        MNN_ASSERT(inputDataSize == outputDataSize);
+        MNN_ASSERT(inputDataSize == output->elementSize());
         for (int i = 0; i < inputDataSize; i++) {
             int value  = srcData[i] == 0 ? 0 : 1;
             dstData[i] = value;

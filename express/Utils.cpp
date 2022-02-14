@@ -10,8 +10,42 @@
 #include <map>
 #include "MNN_generated.h"
 #include "core/TensorUtils.hpp"
+#include "core/MNNMemoryUtils.h"
+#include "core/Backend.hpp"
+#include "core/Execution.hpp"
+#include "core/ConvolutionCommon.hpp"
+
 namespace MNN {
 namespace Express {
+Expr::Inside::Inside(int outputSize) {
+    mOutputInfos.resize(outputSize);
+    mOutputTensors.resize(outputSize);
+    for (int i=0; i<outputSize; ++i) {
+        mOutputTensors[i] = new Tensor;
+        TensorUtils::getDescribe(mOutputTensors[i])->memoryType = Tensor::InsideDescribe::MEMORY_HOST;
+    }
+}
+Expr::Inside::Inside(Tensor* tensor, bool own) {
+    mOutputInfos.resize(1);
+    mOutputTensors.resize(1);
+    mOutputTensors[0] = tensor;
+    Utils::copyTensorToInfo(&mOutputInfos[0], tensor);
+    mOutputInfos[0].syncSize();
+    mOwnTensor = own;
+}
+
+Expr::Inside::~Inside() {
+    if (mOwnTensor) {
+        for (auto t : mOutputTensors) {
+            delete t;
+        }
+    }
+    if (nullptr != mHostTensor) {
+        delete mHostTensor;
+    }
+}
+
+
 #define CONVERT(src, dst, f)\
 if (f == src) return dst;
 
@@ -43,6 +77,7 @@ halide_type_t Utils::revertDataType(DataType dataType) {
     CONVERT(DataType_DT_INT64, halide_type_of<int32_t>(), dataType);
     CONVERT(DataType_DT_UINT8, halide_type_of<uint8_t>(), dataType);
     CONVERT(DataType_DT_INT8, halide_type_of<int8_t>(), dataType);
+    CONVERT(DataType_DT_HALF, halide_type_of<float>(), dataType);
     return halide_type_of<float>();
 }
 Express::Dimensionformat Utils::revertFormat(int format) {
@@ -61,7 +96,6 @@ void Utils::copyInfoToTensor(Tensor* dest, const Variable::Info* source) {
     }
     dest->buffer().dimensions                       = (int)source->dim.size();
     dest->buffer().type                             = source->type;
-    dest->buffer().host                             = (uint8_t*)source->ptr;
     TensorUtils::getDescribe(dest)->dimensionFormat = (MNN_DATA_FORMAT)Utils::convertFormat(source->order);
     TensorUtils::setLinearLayout(dest);
 }
@@ -70,7 +104,31 @@ void Utils::copyTensorToInfo(Variable::Info* shape, const Tensor* tensor) {
     shape->dim   = tensor->shape();
     shape->size  = tensor->elementSize();
     shape->order = Utils::revertFormat(TensorUtils::getDescribe(tensor)->dimensionFormat);
-    shape->ptr   = tensor->host<float>();
+}
+bool Utils::allocMemoryForHostTensor(Tensor* dest) {
+    if (nullptr != dest->buffer().host) {
+        return true;
+    }
+    if (TensorUtils::getDescribe(dest)->memoryType != Tensor::InsideDescribe::MEMORY_HOST) {
+        return false;
+    }
+    auto size = dest->size();
+    if (0 >= size) {
+        return false;
+    }
+    dest->buffer().host = (uint8_t*)MNNMemoryAllocAlign(size, MNN_MEMORY_ALIGN_DEFAULT);
+    return dest->buffer().host != nullptr;
+}
+bool Utils::releaseMemoryForHostTensor(Tensor* dest) {
+    if (nullptr == dest->buffer().host) {
+        return true;
+    }
+    if (TensorUtils::getDescribe(dest)->memoryType != Tensor::InsideDescribe::MEMORY_HOST) {
+        return false;
+    }
+    MNNMemoryFreeAlign(dest->buffer().host);
+    dest->buffer().host = nullptr;
+    return true;
 }
 
 } // namespace Express

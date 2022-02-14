@@ -3,8 +3,10 @@ import sys
 from os import listdir
 from os.path import isfile, join
 shaderPath=sys.argv[1]
-cppPath=sys.argv[2]
-def main():
+# when target=macosx, build for Macos=10.11 and osx-metal1.1 for compatibility
+target=None if len(sys.argv) < 3 else sys.argv[2]
+cppPath= shaderPath + "/MetalOPRegister.mm"
+def genRegister():
     shaders=[]
     for root, dirs, files in os.walk(shaderPath):
         for file in files:
@@ -25,12 +27,32 @@ def main():
                         funcname="___"+x[0]+"__"+x[1]+"__();"
                         funcs.append(funcname)
                         f.write("  extern void "+funcname+"\n")
-                        break
             pass
         f.write("void registerMetalOps() {\n")
         for func in funcs:
             f.write("   "+func+"\n")
         f.write("}\n#endif\n}")
 
+def genSchema():
+    FLATC = shaderPath + "/../../../3rd_party/flatbuffers/tmp/flatc"
+    sourceFile = shaderPath + "/schema/MetalCache.fbs"
+    destFile = shaderPath + "/"
+    cmd = FLATC + " -c " + sourceFile +" --gen-object-api"
+    print(cmd)
+    print(os.popen(cmd).read())
+    return
+
+def genShader():
+    tempCacheFile = "MNNMetalLib"
+    if target == 'macosx':
+        cmd = "xcrun -sdk macosx metal -mmacosx-version-min=10.11 -std=osx-metal1.1 *.metal -o " + tempCacheFile
+    else:
+        cmd = "xcrun metal *.metal -o " + tempCacheFile
+    print(os.popen(cmd).read())
+    os.popen("xxd -i " + tempCacheFile + " > MNNMetalLib.h").read()
+    os.popen("rm -f " + tempCacheFile).read()
+
 if __name__ == '__main__':
-    main()
+    genRegister()
+    genSchema()
+    genShader()

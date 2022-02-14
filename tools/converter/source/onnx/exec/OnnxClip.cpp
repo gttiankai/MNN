@@ -1,6 +1,6 @@
 //
 //  OnnxClip.cpp
-//  MNN
+//  MNNConverter
 //
 //  Created by MNN on 2020/02/04.
 //  Copyright © 2018, Alibaba Group Holding Limited
@@ -65,6 +65,9 @@ int main(int argc, const char* argv[]) {
     for (int i =0; i<clipSize; ++i) {
         onnxGraph->mutable_node()->RemoveLast();
     }
+    onnxGraph->mutable_output()->Clear();
+    auto info = onnxGraph->mutable_output()->Add();
+    info->set_name(layerName);
     onnx_write_proto_from_binary(dstModelName, &onnxModel);
     return 0;
 }

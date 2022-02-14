@@ -1,4 +1,7 @@
 //
+//  SpaceToDepthOnnx.cpp
+//  MNNConverter
+//
 //  Created by MNN on 2019/06/28.
 //  Copyright © 2018, Alibaba Group Holding Limited
 //
@@ -17,7 +20,7 @@ MNN::OpParameter SpaceToDepthOnnx::type() {
 }
 
 void SpaceToDepthOnnx::run(MNN::OpT* dstOp, const onnx::NodeProto* onnxNode,
-std::vector<const onnx::TensorProto*> initializers) {
+OnnxScope* scope) {
     
     auto spaceToDepthParam = new MNN::DepthSpaceParamT;
     

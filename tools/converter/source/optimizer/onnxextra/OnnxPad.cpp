@@ -7,8 +7,8 @@
 //
 
 #include <map>
-#include <vector>
 #include <string>
+#include <vector>
 #include "MNN_generated.h"
 #include "OnnxExtraManager.hpp"
 #include "logkit.h"
@@ -20,38 +20,39 @@ class OnnxPadTransform : public OnnxExtraManager::Transform {
 public:
     virtual EXPRP onExecute(EXPRP expr) const override {
         auto inputs = expr->inputs();
-        auto op = expr->get();
+        auto op     = expr->get();
         auto opName = op->name()->str();
-        
-        PadValueMode mode;
+
+        PadValueMode mode = CONSTANT;
         VARP padsVar;
         bool padsFromInput = true;
-        
+
         auto info = op->main_as_Extra();
-        for (int i = 0; i < info->attr()->size(); ++i) {
-            const auto attr = info->attr()->GetAs<Attribute>(i);
-            const auto attributeName = attr->key()->str();
-            if (attributeName == "mode") {
-                const std::map<std::string, PadValueMode> padValueModeMap = {
-                    {"constant", CONSTANT},
-                    {"reflect", REFLECT}
-                };
-                auto modeStr = attr->s()->str();
-                if (padValueModeMap.find(modeStr) == padValueModeMap.end()) {
-                    LOG(ERROR) << "MNN only support ['constant', 'reflect'] Pad mode";
-                    return nullptr;
+        if (nullptr != info->attr()) {
+            for (int i = 0; i < info->attr()->size(); ++i) {
+                const auto attr          = info->attr()->GetAs<Attribute>(i);
+                const auto attributeName = attr->key()->str();
+                if (attributeName == "mode") {
+                    const std::map<std::string, PadValueMode> padValueModeMap = {
+                        {"constant", CONSTANT}, {"reflect", REFLECT}, {"edge", EDGE}
+                    };
+                    auto modeStr                                              = attr->s()->str();
+                    if (padValueModeMap.find(modeStr) == padValueModeMap.end()) {
+                        LOG(ERROR) << "MNN only support ['constant', 'reflect'] Pad mode";
+                        return nullptr;
+                    }
+                    mode = padValueModeMap.at(modeStr);
+                } else if (attributeName == "pads") {
+                    padsFromInput = false;
+                    auto padList  = attr->list()->i();
+                    int size      = padList->size();
+                    std::vector<int> pads(size);
+                    for (int s = 0; s < size / 2; ++s) {
+                        pads[s * 2]     = padList->Get(s);
+                        pads[s * 2 + 1] = padList->Get(s + size / 2);
+                    }
+                    padsVar = _Const(pads.data(), {(int)pads.size()}, NCHW, halide_type_of<int>());
                 }
-                mode = padValueModeMap.at(modeStr);
-            } else if (attributeName == "pads") {
-                padsFromInput = false;
-                auto padList = attr->list()->i();
-                int size = padList->size();
-                std::vector<int> pads(size);
-                for (int s = 0; s < size / 2; ++s) {
-                    pads[s * 2] = padList->Get(s);
-                    pads[s * 2 + 1] = padList->Get(s + size / 2);
-                }
-                padsVar = _Const(pads.data(), {(int)pads.size()}, NHWC, halide_type_of<int>());
             }
         }
         if (padsFromInput) {
@@ -64,12 +65,36 @@ public:
                Example: pad2d, onnx: [left, upper, right, bottom], MNN: [left, right, upper, bottom]
                So we need this order converting subgraph (all const, not affect inference speed).
              */
-            padsVar = _Reshape(_Transpose(_Reshape(inputs[1], {2, 4}), {1, 0}), {-1});
+            padsVar = _Reshape(_Transpose(_Reshape(inputs[1], {2, -1}), {1, 0}), {-1});
         }
-        
-        VARP res = _Pad(inputs[0], padsVar, mode);
+        std::unique_ptr<OpT> pad(new OpT);
+        pad->type       = OpType_Padding;
+        pad->main.type  = OpParameter_PadParam;
+        pad->main.value = new PadParamT;
+        switch (mode) {
+            case CONSTANT:
+                pad->main.AsPadParam()->mode = MNN::PadValueMode_CONSTANT;
+                break;
+            case SYMMETRIC:
+                pad->main.AsPadParam()->mode = MNN::PadValueMode_SYMMETRIC;
+                break;
+            case REFLECT:
+                pad->main.AsPadParam()->mode = MNN::PadValueMode_REFLECT;
+                break;
+            case EDGE:
+                pad->main.AsPadParam()->mode = MNN::PadValueMode_EDGE;
+                break;
+            default:
+                pad->main.AsPadParam()->mode = MNN::PadValueMode_CONSTANT;
+                break;
+        }
+        std::vector<VARP> newInputs{inputs[0], padsVar};
+        if (inputs.size() > 2) {
+            newInputs.emplace_back(inputs[2]);
+        }
+        auto res = Expr::create(pad.get(), newInputs);
         res->setName(opName);
-        return res->expr().first;
+        return res;
     }
 };
 

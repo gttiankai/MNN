@@ -1,3 +1,11 @@
+//
+//  expressDemo.cpp
+//  MNN
+//
+//  Created by MNN on b'2019/08/19'.
+//  Copyright © 2018, Alibaba Group Holding Limited
+//
+
 #include <MNN/expr/Expr.hpp>
 #include <MNN/expr/ExprCreator.hpp>
 #include <MNN/expr/Executor.hpp>
@@ -53,7 +61,6 @@ int main(int argc, const char* argv[]) {
         MNN_ERROR("Output Not valid\n");
         return 0;
     }
-    auto size = outputInfo->size;
     //Test Speed
     if (testTime > 0){
         //Let the frequence up
@@ -82,6 +89,7 @@ int main(int argc, const char* argv[]) {
     }
 
     {
+        auto size = outputInfo->size;
         auto outputPtr = output->readMap<float>();
         if (nullptr == outputPtr) {
             MNN_ERROR("Output Not valid read error\n");

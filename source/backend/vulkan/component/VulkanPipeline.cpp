@@ -6,7 +6,7 @@
 //  Copyright © 2018, Alibaba Group Holding Limited
 //
 
-#include "backend/vulkan/component/VulkanPipeline.hpp"
+#include "VulkanPipeline.hpp"
 #include <string.h>
 #include <map>
 namespace MNN {
@@ -16,6 +16,11 @@ VulkanPipelineFactory::VulkanPipelineFactory(const VulkanDevice& dev) : mDevice(
 }
 VulkanPipelineFactory::~VulkanPipelineFactory() {
     mDevice.destroyPipelineCache(mCache);
+}
+
+void VulkanPipelineFactory::reset() {
+    mDevice.destroyPipelineCache(mCache);
+    CALL_VK(mDevice.createPipelineCache(mCache));
 }
 
 VulkanPipeline::VulkanPipeline(const VulkanDevice& dev, VkPipeline p, VkPipelineLayout layout,
@@ -102,6 +107,10 @@ VulkanPipeline* VulkanPipeline::create(const VulkanDevice& dev, const uint8_t* d
     return new VulkanPipeline(dev, pipeline, pipelineLayout, desPoolSize, setLayout, bufferTypes);
 }
 VulkanPipeline::~VulkanPipeline() {
+    for (auto& iter : mFreeSets) {
+        mDevice.freeDescriptorSets(iter.second, 1, &iter.first);
+        mDevice.destroyDescriptorPool(iter.second);
+    }
     mDevice.destroyPipelineLayout(mLayout);
     mDevice.destroyDescriptorSetLayout(mSetLayout);
     mDevice.destroyPipeline(mPipeline);
@@ -116,13 +125,23 @@ void VulkanPipeline::bind(VkCommandBuffer cmd, VkDescriptorSet des) const {
 }
 
 VulkanPipeline::DescriptorSet* VulkanPipeline::createSet() const {
+    if (!mFreeSets.empty()) {
+        auto iter = mFreeSets.end() - 1;
+        auto res = new VulkanPipeline::DescriptorSet(iter->first, iter->second, this);
+        mFreeSets.erase(iter);
+        return res;
+    }
     VkDescriptorPool descriptorPool;
     //        FUNC_PRINT(poolInfo.poolSizeCount);
     CALL_VK(mDevice.createDescriptorPool(descriptorPool, mDesPoolSize.size(), mDesPoolSize.data()));
 
     VkDescriptorSet descriptorSet;
     CALL_VK(mDevice.allocateDescriptorSet(descriptorSet, descriptorPool, mSetLayout));
-    return new DescriptorSet(mDevice, descriptorSet, descriptorPool, this);
+    return new DescriptorSet(descriptorSet, descriptorPool, this);
+}
+
+VulkanPipeline::DescriptorSet::~DescriptorSet() {
+    mPipeline->mFreeSets.emplace_back(std::make_pair(mSet, mPool));
 }
 
 void VulkanPipeline::DescriptorSet::writeBuffer(VkBuffer buffer, int bindIndex, size_t size, VkDeviceSize offset) {
@@ -140,7 +159,7 @@ void VulkanPipeline::DescriptorSet::writeBuffer(VkBuffer buffer, int bindIndex, 
     writeSet.pBufferInfo     = &sourceInfo;
     writeSet.dstSet          = mSet;
 
-    mDevice.updateWriteDescriptorSet(writeSet);
+    mPipeline->mDevice.updateWriteDescriptorSet(writeSet);
 }
 
 void VulkanPipeline::DescriptorSet::writeImage(VkImageView view, VkSampler sampler, VkImageLayout layout, int bind) {
@@ -158,7 +177,7 @@ void VulkanPipeline::DescriptorSet::writeImage(VkImageView view, VkSampler sampl
     writeSet.pImageInfo      = &sourceInfo;
     writeSet.dstSet          = mSet;
 
-    mDevice.updateWriteDescriptorSet(writeSet);
+    mPipeline->mDevice.updateWriteDescriptorSet(writeSet);
 }
 
 const VulkanPipeline* VulkanPipelineFactory::getPipeline(const std::string& key,

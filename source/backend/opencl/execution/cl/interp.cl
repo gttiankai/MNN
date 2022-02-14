@@ -1,3 +1,7 @@
+#ifdef MNN_SUPPORT_FP16
+#pragma OPENCL EXTENSION cl_khr_fp16 : enable
+#endif
+
 #define GLOBAL_SIZE_3_DIMS \
     __private const int global_size_dim0, __private const int global_size_dim1, __private const int global_size_dim2,
 
@@ -10,6 +14,7 @@ __constant sampler_t SAMPLER = CLK_NORMALIZED_COORDS_FALSE | CLK_ADDRESS_CLAMP |
 
 __kernel void interp(GLOBAL_SIZE_3_DIMS __read_only image2d_t input, __write_only image2d_t output,
                      __private const float height_scale, __private const float width_scale,
+                     __private const float height_offset, __private const float width_offset,
                      __private const int input_height, __private const int input_width,
                      __private const int out_height) {
     const int output_channel_block_idx      = get_global_id(0);
@@ -23,13 +28,8 @@ __kernel void interp(GLOBAL_SIZE_3_DIMS __read_only image2d_t input, __write_onl
     const int output_batch_idx  = output_batch_height_block_idx / out_height;
     const int output_height_idx = output_batch_height_block_idx % out_height;
 
-#ifdef HALF_PIXEL_CENTER
-    const float scale_height = (output_height_idx + 0.5) * height_scale - 0.5;
-    const float scale_width  = (output_width_block_idx + 0.5) * width_scale - 0.5;
-#else
-    const float scale_height = output_height_idx * height_scale;
-    const float scale_width  = output_width_block_idx * width_scale;
-#endif
+    const float scale_height = output_height_idx * height_scale + height_offset;
+    const float scale_width  = output_width_block_idx * width_scale + width_offset;
 #define CLAMP(val, min_val, max_val) max(min(val, max_val), min_val)
     const int height_floor   = (int)floor(scale_height);
     const int height_lf      = CLAMP(height_floor, 0, input_height - 1);
@@ -53,7 +53,6 @@ __kernel void interp(GLOBAL_SIZE_3_DIMS __read_only image2d_t input, __write_onl
         read_imagef(input, SAMPLER, (int2)(input_width_offset + width_lf, input_height_offset + height_uf));
     float4 bottom_right =
         read_imagef(input, SAMPLER, (int2)(input_width_offset + width_uf, input_height_offset + height_uf));
-
     float4 top    = mad((top_right - top_left), width_gap, top_left);
     float4 bottom = mad((bottom_right - bottom_left), width_gap, bottom_left);
     float4 out    = mad((bottom - top), height_gap, top);

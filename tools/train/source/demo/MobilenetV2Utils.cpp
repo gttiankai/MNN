@@ -24,7 +24,8 @@
 #include "RandomGenerator.hpp"
 #include "Transformer.hpp"
 #include "ImageDataset.hpp"
-#include "PipelineModule.hpp"
+#include "module/PipelineModule.hpp"
+#include "cpp/ConvertToFullQuant.hpp"
 
 using namespace MNN;
 using namespace MNN::Express;
@@ -32,13 +33,11 @@ using namespace MNN::Train;
 
 void MobilenetV2Utils::train(std::shared_ptr<Module> model, const int numClasses, const int addToLabel,
                                 std::string trainImagesFolder, std::string trainImagesTxt,
-                                std::string testImagesFolder, std::string testImagesTxt,
-                                const int trainQuantDelayEpoch, const int quantBits) {
+                                std::string testImagesFolder, std::string testImagesTxt, const int quantBits) {
     auto exe = Executor::getGlobalExecutor();
     BackendConfig config;
-    exe->setGlobalExecutorConfig(MNN_FORWARD_CPU, config, 2);
-    std::shared_ptr<SGD> solver(new SGD);
-    solver->append(model->parameters());
+    exe->setGlobalExecutorConfig(MNN_FORWARD_USER_1, config, 2);
+    std::shared_ptr<SGD> solver(new SGD(model));
     solver->setMomentum(0.9f);
     // solver->setMomentum2(0.99f);
     solver->setWeightDecay(0.00004f);
@@ -77,13 +76,8 @@ void MobilenetV2Utils::train(std::shared_ptr<Module> model, const int numClasses
             AUTOTIME;
             trainDataLoader->reset();
             model->setIsTraining(true);
-            // turn float model to quantize-aware-training model after a delay
-            if (epoch == trainQuantDelayEpoch) {
-                // turn model to train quant model
-                std::static_pointer_cast<PipelineModule>(model)->toTrainQuant(quantBits);
-            }
             for (int i = 0; i < trainIterations; i++) {
-                //AUTOTIME;
+                AUTOTIME;
                 auto trainData  = trainDataLoader->next();
                 auto example    = trainData[0];
 
@@ -139,7 +133,9 @@ void MobilenetV2Utils::train(std::shared_ptr<Module> model, const int numClasses
             auto predict = model->forward(forwardInput);
             Transformer::turnModelToInfer()->onExecute({predict});
             predict->setName("prob");
-            Variable::save({predict}, "temp.mobilenetv2.mnn");
+            std::string fileName = "temp.mobilenetv2.mnn";
+            Variable::save({predict}, fileName.c_str());
+            ConvertToFullQuant::convert(fileName);
         }
 
         exe->dumpProfile();

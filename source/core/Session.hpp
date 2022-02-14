@@ -9,26 +9,32 @@
 #ifndef Session_hpp
 #define Session_hpp
 
+#include <MNN/Tensor.hpp>
 #include <map>
 #include <memory>
 #include <vector>
-#include "core/Backend.hpp"
-#include "core/Macro.h"
 #include "Pipeline.hpp"
 #include "Schedule.hpp"
-#include "SizeComputer.hpp"
-#include <MNN/Tensor.hpp>
+#include "core/Backend.hpp"
+#include "core/Macro.h"
+#include "shape/SizeComputer.hpp"
+#define MNN_DEFAULT_TUNING_NUMBER 5
 
 namespace MNN {
 struct Net;
 /** infer unit. multiple sessions could share one net. */
 class MNN_PUBLIC Session {
 public:
-    /**
-     * @breif initializ with schedule info.
-     * @param info  given schedule info.
-     */
-    Session(const Schedule::ScheduleInfo& info);
+    struct ModeGroup {
+        Interpreter::SessionMode callBackMode = Interpreter::Session_Debug;
+        Interpreter::SessionMode inputMode = Interpreter::Session_Input_Inside;
+        Interpreter::SessionMode outputMode = Interpreter::Session_Output_Inside;
+        Interpreter::SessionMode backendMode = Interpreter::Session_Backend_Fix;
+        Interpreter::SessionMode resizeMode = Interpreter::Session_Resize_Direct;
+        int maxTuningNumber = MNN_DEFAULT_TUNING_NUMBER;
+    };
+    Session(Schedule::ScheduleInfo&& info, const ModeGroup& mode,
+            RuntimeInfo&& runtime);
     ~Session();
 
 public:
@@ -46,32 +52,30 @@ public:
      */
     ErrorCode runWithCallBack(const TensorCallBackWithInfo& enterCallback, const TensorCallBackWithInfo& exitCallback,
                               bool sync = false) const;
-    /**
-     * @brief infer with loops. used for profiling only.
-     * @param loops run times.
-     * @return result code.
-     */
-    ErrorCode runWithProfiler(int loops) const;
 
+    bool getInfo(Interpreter::SessionInfoCode code, void* ptr) const;
+
+    void cloneExecution(const CacheExecutionMap& cache);
+    const CacheExecutionMap& getExecution() {
+        return mOriginExecutions;
+    }
 public:
     /**
      * @brief resize tensors and buffers responding to input changes.
      * @return result code.
      */
-    ErrorCode resize();
-    /**
-     * @brief check if needs resize.
-     * @return needs resize or not.
-     */
-    bool getNeedResize() const {
-        return mNeedResize;
-    }
+    ErrorCode resize(bool isStatic = false);
+
     /**
      * @brief set if needs resize.
      * @param flag  needs resize or not.
      */
     void setNeedResize(bool flag = true) {
         mNeedResize = flag;
+    }
+
+    void setNeedMalloc(bool flag = true) {
+        mNeedMalloc = flag;
     }
 
 public:
@@ -112,17 +116,18 @@ public:
     }
 
     /**
-     * @brief the session will not be resized any more, release all cache used for resize.
-     * @return errorcode
-     */
-    ErrorCode releaseCache();
-
-    /**
      * @brief update the session's const value to origin model's const blob.
      * @return errorcode
      */
     ErrorCode updateToModel(Net* net) const;
 
+    void waitAsyncResize();
+    bool loadCache(const void* buffer, size_t size);
+    std::pair<const void*, size_t> getCache();
+
+    RuntimeInfo& runtime() {
+        return mRuntime;
+    }
 protected:
     const std::vector<std::shared_ptr<Pipeline>>& getPipelines() const {
         return this->mPipelines;
@@ -131,16 +136,18 @@ protected:
 private:
     void _clearCache();
     void _setUpTensorInfo(const Schedule::ScheduleInfo& info);
-    Backend* _getDefaultBackend();
 
 private:
-    std::map<MNNForwardType, std::shared_ptr<Backend>> mBackends;
+    RuntimeInfo mRuntime;
     std::vector<std::shared_ptr<Pipeline>> mPipelines;
-    std::vector<std::pair<int, std::shared_ptr<Tensor>>> mTensors;
+    std::vector<std::shared_ptr<Tensor>> mTensors;
     std::map<std::string, Tensor*> mInputs;
     std::map<std::string, Tensor*> mOutputs;
-    bool mNeedResize       = false;
-    bool mValid            = true;
+    bool mNeedResize = true;
+    bool mValid      = true;
+    bool mNeedMalloc = true;
+    Interpreter::SessionMode mCallBackMode;
+    CacheExecutionMap mOriginExecutions;
 };
 } // namespace MNN
 

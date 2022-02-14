@@ -24,6 +24,12 @@ enum BinaryOpOperation : byte {
     ATAN2 = 20,
     LOGICALOR = 21,
     NOTEQUAL = 22,
+    BITWISE_AND = 23,
+    BITWISE_OR = 24,
+    BITWISE_XOR = 25,
+    LOGICALXOR = 26,
+    LEFTSHIFT = 27,
+    RIGHTSHIFT = 28,
 }
 
 table BinaryOp {
@@ -137,6 +143,11 @@ enum UnaryOpOperation : int {
     ERFC = 26,
     ERFINV = 27,
     EXPM1 = 28,
+    SIGMOID = 29,
+    TANH = 30,
+    HARDSWISH = 31,
+    GELU = 32,
+    GELU_STANDARD = 33,
 }
 
 table UnaryOp {
@@ -147,6 +158,7 @@ table UnaryOp {
 table TopKV2 {
     T:DataType=DT_FLOAT;
     sorted:bool=false;
+    largest:bool=true;
 }
 enum CropAndResizeMethod : byte{
     BILINEAR=0,
@@ -159,7 +171,7 @@ table CropAndResize {
 }
 
 table Fill {
-    
+
 }
 
 table GatherV2 {
@@ -169,7 +181,7 @@ table GatherV2 {
 }
 
 table NonMaxSuppressionV2 {
-    
+
 }
 
 table Range {
@@ -177,7 +189,7 @@ table Range {
 }
 
 table Rank {
-    
+
 }
 
 table Size {
@@ -222,16 +234,20 @@ table MomentsParam {
 table RNNParam {
     numUnits: int;
     isBidirectionalRNN: bool;
+    linearBeforeReset: bool;
+
     keepAllOutputs: bool;
     fwGateWeight: Blob;
     fwGateBias: Blob;
     fwCandidateWeight: Blob;
     fwCandidateBias: Blob;
+    fwRecurrentBias: Blob;
 
     bwGateWeight: Blob;
     bwGateBias: Blob;
     bwCandidateWeight: Blob;
     bwCandidateBias: Blob;
+    bwRecurrentBias: Blob;
 }
 
 table BatchMatMulParam {
@@ -239,9 +255,15 @@ table BatchMatMulParam {
     adjY: bool = false;
 }
 
+enum DepthToSpaceMode : byte {
+    DCR = 0,
+    CRD = 1
+}
+
 // DepthToSpace and SpaceToDepth using the same parameter
 table DepthSpaceParam {
     blockSize: int;
+    mode: DepthToSpaceMode = DCR;
 }
 
 table ReverseSequenceParam {
@@ -270,9 +292,42 @@ table OneHotParam{
 enum PadValueMode : byte{
     CONSTANT = 0,
     REFLECT = 1,
-    SYMMETRIC = 2
+    SYMMETRIC = 2,
+    EDGE=3,
 }
 
 table PadParam{
     mode: PadValueMode = CONSTANT;
+}
+table LayerNorm {
+    axis: [int];
+    epsilon: float;
+    gamma: [float];
+    beta: [float];
+    group: int = 1;
+}
+table RandomUniform {
+    seed:int = 0;
+    seed2:int = 0;
+    type:DataType = DT_FLOAT;
+    low:float = 0.0;
+    high:float = 1.0;
+}
+table TensorArray {
+    // false - fix array size; true - dynamic array size;
+    dynamic_size:bool = false;
+    // false - element dynamic shape; true - element identical shape;
+    identical_element_shapes:bool = false;
+    element_shape:[int];
+    T:DataType = DT_FLOAT;
+    // onnx related attributes
+    axis:int = 0;
+    keepdims:bool = true;
+    new_axis:bool = false;
+}
+
+table LSTMBlockCell {
+    cell_clip:float = 3.0;
+    forget_bias:float = 1.0;
+    use_peephole:bool = false;
 }

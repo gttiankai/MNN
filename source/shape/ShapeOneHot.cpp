@@ -7,8 +7,8 @@
 //
 
 
+#include "shape/SizeComputer.hpp"
 #include "core/Macro.h"
-#include "core/SizeComputer.hpp"
 
 namespace MNN {
 class ShapeOneHot : public SizeComputer {
@@ -27,9 +27,8 @@ public:
         const int outputDimension  = indicesDimension + 1;
 
         auto param = op->main_as_OneHotParam();
-        MNN_CHECK(param->dType() == DataType_DT_FLOAT, "TODO, support other data type!");
         int axis = param->axis();
-        if (axis == -1) {
+        if (axis < 0) {
             axis = outputDimension + axis;
         }
         auto output                 = outputs[0];

@@ -1,6 +1,6 @@
 //
 //  TanhOnnx.cpp
-//  MNN
+//  MNNConverter
 //
 //  Created by MNN on 2019/06/28.
 //  Copyright © 2018, Alibaba Group Holding Limited
@@ -19,7 +19,7 @@ MNN::OpParameter TanhOnnx::type() {
 }
 
 void TanhOnnx::run(MNN::OpT* dstOp, const onnx::NodeProto* onnxNode,
-                      std::vector<const onnx::TensorProto*> initializers) {
+                      OnnxScope* scope) {
     dstOp->main.value = nullptr;
 }
 

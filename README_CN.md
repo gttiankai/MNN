@@ -2,10 +2,12 @@
 
 [English Version](README.md)
 
+[MNN官网](http://www.mnn.zone)
+
 ## 简介
 MNN是一个高效、轻量的深度学习框架。它支持深度模型推理与训练，尤其在端侧的推理与训练性能在业界处于领先地位。目前，MNN已经在阿里巴巴的手机淘宝、手机天猫、优酷、钉钉、闲鱼等20多个App中使用，覆盖直播、短视频、搜索推荐、商品图像搜索、互动营销、权益发放、安全风控等70多个场景。此外，IoT等场景下也有若干应用。
 
-MNN的架构设计理念与性能数据在MLSys 2020上面发表。Paper [在此处](https://proceedings.mlsys.org/static/paper_files/mlsys/2020/7-Paper.pdf)。如果MNN对你的研究有所助益，欢迎引用MNN的论文：
+MNN的架构设计理念与性能数据在MLSys 2020上面发表。Paper [在此处](https://arxiv.org/pdf/2002.12418.pdf)。如果MNN对你的研究有所助益，欢迎引用MNN的论文：
 
     @inproceedings{alibaba2020mnn,
       author = {Jiang, Xiaotang and Wang, Huan and Chen, Yiliu and Wu, Ziqi and Wang, Lichuan and Zou, Bin and Yang, Yafeng and Cui, Zongyang and Cai, Yu and Yu, Tianhang and Lv, Chengfei and Wu, Zhihua},
@@ -14,8 +16,10 @@ MNN的架构设计理念与性能数据在MLSys 2020上面发表。Paper [在此
       year = {2020}
     }
 
-## 文档
+## 文档与工具
 MNN的使用文档统一放在语雀，请移步至[语雀文档](https://www.yuque.com/mnn/cn)。
+
+[MNN官网](http://www.mnn.zone)上还可以下载MNN团队全新力作MNN工作台，涵盖开箱即用模型、可视化训练等工具，更可以一键部署到多端设备。
 
 ## MNN 特色
 ### 高性能
@@ -52,19 +56,7 @@ Converter由Frontends和Graph Optimize构成。前者负责支持不同的训练
 Interpreter由Engine和Backends构成。前者负责模型的加载、计算图的调度；后者包含各计算设备下的内存分配、Op实现。在Engine和Backends中，MNN应用了多种优化方案，包括在卷积和反卷积中应用Winograd算法、在矩阵乘法中应用Strassen算法、低精度计算、Neon优化、手写汇编、多线程优化、内存复用、异构计算等。
 
 ##  社区交流与反馈
-扫描二维码加入钉钉讨论群。
-
-一群（已满）：
-
-<img src="doc/DingTalkQR1.png" height="256"/>
-
-二群（已满）：
-
-<img src="doc/DingTalkQR2.png" height="256"/>
-
-三群：
-
-<img src="doc/DingTalkQR23.png" height="256"/>
+扫描二维码加入钉钉讨论群，见：https://www.yuque.com/mnn/cn/feedback
 
 ## License
 Apache 2.0
@@ -76,7 +68,7 @@ MNN参考、借鉴了下列项目：
 - [Caffe](https://github.com/BVLC/caffe)
 - [flatbuffer](https://github.com/google/flatbuffers)
 - [gemmlowp](https://github.com/google/gemmlowp)
-- [Google Vulkan demo](http://www.github.com/googlesamples/android-vulkan-tutorials) 
+- [Google Vulkan demo](http://www.github.com/googlesamples/android-vulkan-tutorials)
 - [Halide](https://github.com/halide/Halide)
 - [Mace](https://github.com/XiaoMi/mace)
 - [ONNX](https://github.com/onnx/onnx)
@@ -91,3 +83,4 @@ MNN参考、借鉴了下列项目：
 - [pytorch](https://github.com/pytorch/pytorch)
 - [bolt](https://github.com/huawei-noah/bolt)
 - [libyuv](https://chromium.googlesource.com/libyuv/libyuv)
+- [libjpeg](https://github.com/libjpeg-turbo/libjpeg-turbo)

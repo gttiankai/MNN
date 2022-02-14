@@ -14,10 +14,11 @@
 #include <sstream>
 #include <stack>
 #include <string>
-#include "Module.hpp"
+#include <MNN/expr/Module.hpp>
 #include "OpGrad.hpp"
 #include "Transformer.hpp"
 #include "core/Macro.h"
+#define USE_ELU
 #define MNN_OPEN_TIME_TRACE
 #include <MNN/AutoTime.hpp>
 #include "rapidjson/document.h"
@@ -171,6 +172,7 @@ int main(int argc, const char* argv[]) {
     for (auto iter : varUpdateMap) {
         resultOutputs.emplace_back(iter.second);
     }
+    Variable::save(resultOutputs, ".grad.mnn");
     Variable::save(resultOutputs, netStruct.get());
     for (int i = 0; i < netStruct->oplists.size(); ++i) {
         auto& op = netStruct->oplists[i];

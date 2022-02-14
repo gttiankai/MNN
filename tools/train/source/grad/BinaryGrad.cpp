@@ -55,7 +55,7 @@ public:
             }
             case MNN::EltwiseType_MAXIMUM: {
                 for (int i = 0; i < inputs.size(); ++i) {
-                    auto mask = _Sign(inputs[i] - Variable::create(expr, i)) + _Const(1.0f, {}, NCHW);
+                    auto mask = _Sign(inputs[i] - Variable::create(expr, 0)) + _Const(1.0f, {}, NCHW);
                     res[i]    = mask * outputDiff;
                 }
                 break;
@@ -113,6 +113,12 @@ public:
                 res[0] = _Divide(outputDiff, inputs[1]);
                 // d (u / v) = dx / v , -dx*u(1/v)*(1/v)
                 res[1] = _Negative(_Multiply(outputDiff, _Divide(output[0], inputs[1])));
+                break;
+            }
+            case BinaryOpOperation_POW: {
+                // d (pow(x, y)) = dv * pow(x, y) / x * y , dv * pow(x, y) * ln(y)
+                res[0] = outputDiff * output[0] * _Divide(inputs[1], inputs[0]);
+                res[1] = outputDiff * output[0] * _Log(inputs[1]);
                 break;
             }
             default:

@@ -6,8 +6,9 @@
 //  Copyright © 2018, Alibaba Group Holding Limited
 //
 
-#include "backend/vulkan/execution/VulkanBasicExecution.hpp"
-#include "backend/vulkan/backend/VulkanBackend.hpp"
+#include "VulkanBasicExecution.hpp"
+#include "VulkanBackend.hpp"
+#include "core/TensorUtils.hpp"
 namespace MNN {
 VulkanBasicExecutionDirect::VulkanBasicExecutionDirect(std::shared_ptr<VulkanBasicExecution> encoder) : Execution(encoder->backend()) {
     mEncoder = encoder;
@@ -21,52 +22,84 @@ ErrorCode VulkanBasicExecutionDirect::onExecute(const std::vector<Tensor *> &inp
     return NO_ERROR;
 }
 
-ErrorCode VulkanBasicExecutionDirect::onResize(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) {
-    mCmdBuffer->begin(0);
-    auto extra = static_cast<VulkanBackend *>(backend());
+static void _initLayout(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs, const VulkanCommandPool::Buffer* initCmdBuffer) {
     for (auto input : inputs) {
-        auto vkTensor = extra->findTensor(input->deviceId());
-        if (nullptr == vkTensor) {
-            // The case occured if we don't need the content of input
-            continue;
-        }
-        if (nullptr != vkTensor->image()) {
-            mCmdBuffer->barrierImageIfNeeded(vkTensor->image(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            // mCmdBuffer->barrierImage(vkTensor->image()->get(), VK_IMAGE_LAYOUT_GENERAL,
-            //                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        if (!TensorUtils::getDescribe(input)->regions.empty()) {
+            for (auto& reg : TensorUtils::getDescribe(input)->regions) {
+                auto vkTensor = reinterpret_cast<VulkanTensor*>(reg.origin->deviceId());
+                if (nullptr == vkTensor) {
+                    continue;
+                }
+                for (int i=0; i<vkTensor->imageSize(); ++i) {
+                    auto img = vkTensor->image(i);
+                    if (img->currentLayout() == VK_IMAGE_LAYOUT_UNDEFINED) {
+                        img->barrierRead(initCmdBuffer->get());
+                    }
+                }
+            }
         } else {
-            MNN_ASSERT(vkTensor->buffer() != nullptr);
-            mCmdBuffer->barrierSource(vkTensor->buffer()->buffer(), 0, vkTensor->buffer()->size());
+            auto vkTensor = reinterpret_cast<VulkanTensor*>(input->deviceId());
+            if (nullptr == vkTensor) {
+                continue;
+            }
+            for (int i=0; i<vkTensor->imageSize(); ++i) {
+                auto img = vkTensor->image(i);
+                if (img->currentLayout() == VK_IMAGE_LAYOUT_UNDEFINED) {
+                    img->barrierRead(initCmdBuffer->get());
+                }
+            }
         }
     }
-    auto code = mEncoder->onEncode(inputs, outputs, mCmdBuffer.get());
+}
+static void _postTreat(const std::vector<Tensor *> &outputs, const VulkanCommandPool::Buffer* initCmdBuffer) {
+    for (auto output : outputs) {
+        auto vkTensor = reinterpret_cast<VulkanTensor*>(output->deviceId());
+        if (nullptr == vkTensor) {
+            continue;
+        }
+        for (int i=0; i<vkTensor->imageSize(); ++i) {
+            auto img = vkTensor->image(i);
+            if (img->currentLayout() == VK_IMAGE_LAYOUT_UNDEFINED) {
+                auto img = vkTensor->image(i);
+                img->barrierRead(initCmdBuffer->get());
+            }
+        }
+    }
+}
 
+ErrorCode VulkanBasicExecutionDirect::onResize(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) {
+    auto initCmdBuffer = static_cast<VulkanBackend*>(backend())->getInitCommandBuffer();
+    _initLayout(inputs, outputs, initCmdBuffer);
+    mCmdBuffer->begin(0);
+    auto code = mEncoder->onEncode(inputs, outputs, mCmdBuffer.get());
+    for (auto output : outputs) {
+        auto vkTensor = reinterpret_cast<VulkanTensor*>(output->deviceId());
+        for (int i=0; i<vkTensor->imageSize(); ++i) {
+            auto img = vkTensor->image(i);
+            img->barrierRead(mCmdBuffer->get());
+        }
+    }
+    _postTreat(outputs, mCmdBuffer.get());
     mCmdBuffer->end();
+#ifdef MNN_VULKAN_DEBUG
+#ifdef MNN_VULKAN_DEBUG_EAGER
+    static_cast<VulkanBackend*>(backend())->onExecuteBegin();
+    static_cast<VulkanBackend*>(backend())->pushCommand(mCmdBuffer->get());
+    static_cast<VulkanBackend*>(backend())->onExecuteEnd();
+#endif
+#endif
     return code;
 }
 VulkanBasicExecutionInDirect::VulkanBasicExecutionInDirect(std::shared_ptr<VulkanBasicExecution> encoder) : Execution(encoder->backend()) {
     mEncoder = encoder;
 }
 ErrorCode VulkanBasicExecutionInDirect::onResize(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) {
-
     auto extra = static_cast<VulkanBackend *>(backend());
+    auto initCmdBuffer = static_cast<VulkanBackend*>(backend())->getInitCommandBuffer();
+    _initLayout(inputs, outputs, initCmdBuffer);
     auto mCmdBuffer = extra->getSingleCommand();
-    for (auto input : inputs) {
-        auto vkTensor = extra->findTensor(input->deviceId());
-        if (nullptr == vkTensor) {
-            // The case occured if we don't need the content of input
-            continue;
-        }
-        if (nullptr != vkTensor->image()) {
-            mCmdBuffer->barrierImageIfNeeded(vkTensor->image(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            // mCmdBuffer->barrierImage(vkTensor->image()->get(), VK_IMAGE_LAYOUT_GENERAL,
-            //                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        } else {
-            MNN_ASSERT(vkTensor->buffer() != nullptr);
-            mCmdBuffer->barrierSource(vkTensor->buffer()->buffer(), 0, vkTensor->buffer()->size());
-        }
-    }
     auto code = mEncoder->onEncode(inputs, outputs, mCmdBuffer.get());
+    _postTreat(outputs, mCmdBuffer.get());
     return code;
 }
 } // namespace MNN

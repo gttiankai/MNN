@@ -2,10 +2,12 @@
 
 [中文版本](README_CN.md)
 
+[MNN Homepage](http://www.mnn.zone)
+
 ## Intro
 MNN is a highly efficient and lightweight deep learning framework. It supports inference and training of deep learning models, and has industry leading performance for inference and training on-device. At present, MNN has been integrated in more than 20 apps of Alibaba Inc, such as Taobao, Tmall, Youku, Dingtalk, Xianyu and etc., covering more than 70 usage scenarios such as live broadcast, short video capture, search recommendation, product searching by image, interactive marketing, equity distribution, security risk control. In addition, MNN is also used on embedded devices, such as IoT.
 
-The design principles and performance data of MNN has been published in an MLSys 2020 paper [here](https://proceedings.mlsys.org/static/paper_files/mlsys/2020/7-Paper.pdf). Please cite MNN in your publications if it helps your research:
+The design principles and performance data of MNN has been published in an MLSys 2020 paper [here](https://arxiv.org/pdf/2002.12418.pdf). Please cite MNN in your publications if it helps your research:
 
     @inproceedings{alibaba2020mnn,
       author = {Jiang, Xiaotang and Wang, Huan and Chen, Yiliu and Wu, Ziqi and Wang, Lichuan and Zou, Bin and Yang, Yafeng and Cui, Zongyang and Cai, Yu and Yu, Tianhang and Lv, Chengfei and Wu, Zhihua},
@@ -14,8 +16,10 @@ The design principles and performance data of MNN has been published in an MLSys
       year = {2020}
     }
 
-## Documentation
-MNN's docs are in placed in [Yuque docs here](https://www.yuque.com/mnn/en). 
+## Documentation and Tools
+MNN's docs are in placed in [Yuque docs here](https://www.yuque.com/mnn/en).
+
+MNN Workbench could be downloaded from [MNN's homepage](http://www.mnn.zone), which provides pretrained models, visualized training tools, and one-click deployment of models to devices.
 
 ## Key Features
 ### High performance
@@ -55,17 +59,7 @@ Interpreter consists of Engine and Backends. The former is responsible for the l
 
 Scan the following QR codes to join Dingtalk discussion group. The group discussions are predominantly Chinese. But we welcome and will help English speakers.
 
-Group #1 (Full):
-
-<img src="doc/DingTalkQR1.png" height="256"/>
-
-Group #2 (Full):
-
-<img src="doc/DingTalkQR2.png" height="256"/>
-
-Group #3: 
-
-<img src="doc/DingTalkQR3.png" height="256"/>
+See https://www.yuque.com/mnn/cn/feedback for dingtalk group barcodes.
 
 ## License
 Apache 2.0
@@ -92,3 +86,4 @@ MNN refers to the following projects:
 - [pytorch](https://github.com/pytorch/pytorch)
 - [bolt](https://github.com/huawei-noah/bolt)
 - [libyuv](https://chromium.googlesource.com/libyuv/libyuv)
+- [libjpeg](https://github.com/libjpeg-turbo/libjpeg-turbo)

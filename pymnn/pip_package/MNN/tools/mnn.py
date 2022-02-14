@@ -8,14 +8,10 @@ def usage():
     print("mnn toolsets has following command line tools")
     print("    $mnn")
     print("        list out mnn commands")
-    print("    $mnnops")
-    print("        get supported ops in mnn engine")
     print("    $mnnconvert")
     print("        convert other model to mnn model")
     print("    $mnnquant")
     print("        quantize  mnn model")
-    print("    $mnnvisual")
-    print("        save mnn model topology to image")
 def main():
     """ main function """
     usage()    

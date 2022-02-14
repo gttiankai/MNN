@@ -6,15 +6,15 @@
 //  Copyright © 2018, Alibaba Group Holding Limited
 //
 
-#include "MNNTestSuite.h"
 #include <MNN/Tensor.hpp>
+#include "MNNTestSuite.h"
 
 using namespace MNN;
 
 class TensorTest : public MNNTestCase {
 public:
     virtual ~TensorTest() = default;
-    virtual bool run() {
+    virtual bool run(int precision) {
         // initializer
         {
             Tensor caffe(3, Tensor::CAFFE);

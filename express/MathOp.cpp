@@ -11,8 +11,8 @@
 #include <numeric>
 #include <MNN/expr/ExprCreator.hpp>
 #include <MNN/MNNDefine.h>
-#include "MNN_generated.h"
-
+#include "Utils.hpp"
+#define MNN_DEFAULT_FLATBUFFER_SIZE 32
 namespace MNN {
 namespace Express {
 static DataType _convertDataType(halide_type_t type) {
@@ -30,44 +30,84 @@ static DataType _convertDataType(halide_type_t type) {
     }
     return DataType_DT_INVALID;
 }
+static VARP _checkNC4HW4(VARP x) {
+#ifdef MNN_EXPR_SHAPE_EAGER
+    auto info = x->getInfo();
+    if (nullptr != info && info->order == NC4HW4) {
+        return _Convert(x, NCHW);
+    }
+#endif
+    return x;
+}
 static VARP _Binary(VARP x, VARP y, BinaryOpOperation operation) {
-    std::unique_ptr<OpT> op(new OpT);
-    op->main.type                 = OpParameter_BinaryOp;
-    op->type                      = OpType_BinaryOp;
-    op->main.value                = new BinaryOpT;
-    op->main.AsBinaryOp()->opType = operation;
-    op->main.AsBinaryOp()->T      = DataType_DT_FLOAT;
-    return (Variable::create(Expr::create(op.get(), {x, y})));
+    x = _checkNC4HW4(x);
+    y = _checkNC4HW4(y);
+    flatbuffers::FlatBufferBuilder builder(MNN_DEFAULT_FLATBUFFER_SIZE);
+    BinaryOpBuilder parameter(builder);
+    parameter.add_opType(operation);
+    auto paOffset = parameter.Finish();
+    OpBuilder opB(builder);
+    opB.add_main(paOffset.Union());
+    opB.add_type(OpType_BinaryOp);
+    opB.add_main_type(OpParameter_BinaryOp);
+    builder.Finish(opB.Finish());
+    std::shared_ptr<BufferStorage> extra(new BufferStorage);
+    extra->storage = builder.ReleaseRaw(extra->allocated_size, extra->offset);
+    return Variable::create(Expr::create(extra, {x, y}, 1));
 }
 static VARP _Unary(VARP x, UnaryOpOperation operation) {
-    std::unique_ptr<OpT> op(new OpT);
-    op->main.type                = OpParameter_UnaryOp;
-    op->type                     = OpType_UnaryOp;
-    op->main.value               = new UnaryOpT;
-    op->main.AsUnaryOp()->opType = operation;
-    op->main.AsUnaryOp()->T      = DataType_DT_FLOAT;
-    return (Variable::create(Expr::create(op.get(), {x})));
+    flatbuffers::FlatBufferBuilder builder(MNN_DEFAULT_FLATBUFFER_SIZE);
+    UnaryOpBuilder parameter(builder);
+    parameter.add_opType(operation);
+    auto paOffset = parameter.Finish();
+    OpBuilder opB(builder);
+    opB.add_main(paOffset.Union());
+    opB.add_type(OpType_UnaryOp);
+    opB.add_main_type(OpParameter_UnaryOp);
+    builder.Finish(opB.Finish());
+    std::shared_ptr<BufferStorage> extra(new BufferStorage);
+    extra->storage = builder.ReleaseRaw(extra->allocated_size, extra->offset);
+    return Variable::create(Expr::create(extra, {x}, 1));
 }
 static VARP _Reduce(VARP x, INTS dim, ReductionType type, bool keepDim) {
-    std::unique_ptr<OpT> op(new OpT);
-    op->main.type                          = OpParameter_ReductionParam;
-    op->type                               = OpType_Reduction;
-    op->main.value                         = new ReductionParamT;
-    op->main.AsReductionParam()->dType     = DataType_DT_FLOAT;
-    op->main.AsReductionParam()->operation = type;
-    op->main.AsReductionParam()->dim       = dim;
-    op->main.AsReductionParam()->keepDims  = keepDim;
-    return (Variable::create(Expr::create(op.get(), {x})));
+    x = _checkNC4HW4(x);
+    flatbuffers::FlatBufferBuilder builder(MNN_DEFAULT_FLATBUFFER_SIZE);
+    flatbuffers::Offset<flatbuffers::Vector<int>> dimOffset;
+    if (!dim.empty()) {
+        dimOffset = builder.CreateVector(dim);
+    }
+    ReductionParamBuilder parameter(builder);
+    parameter.add_operation(type);
+    parameter.add_keepDims(keepDim);
+    if (!dim.empty()) {
+        parameter.add_dim(dimOffset);
+    }
+    auto paOffset = parameter.Finish();
+    OpBuilder opB(builder);
+    opB.add_main(paOffset.Union());
+    opB.add_type(OpType_Reduction);
+    opB.add_main_type(OpParameter_ReductionParam);
+    builder.Finish(opB.Finish());
+    std::shared_ptr<BufferStorage> extra(new BufferStorage);
+    extra->storage = builder.ReleaseRaw(extra->allocated_size, extra->offset);
+    return Variable::create(Expr::create(extra, {x}, 1));
 }
 static VARP _ReduceMutable(VARP x, VARP dim, ReductionType type, bool keepDim) {
-    std::unique_ptr<OpT> op(new OpT);
-    op->main.type                          = OpParameter_ReductionParam;
-    op->type                               = OpType_Reduction;
-    op->main.value                         = new ReductionParamT;
-    op->main.AsReductionParam()->dType     = DataType_DT_FLOAT;
-    op->main.AsReductionParam()->operation = type;
-    op->main.AsReductionParam()->keepDims  = keepDim;
-    return (Variable::create(Expr::create(op.get(), {x, dim})));
+    x = _checkNC4HW4(x);
+    flatbuffers::FlatBufferBuilder builder;
+    ReductionParamBuilder parameter(builder);
+    parameter.add_operation(type);
+    parameter.add_keepDims(keepDim);
+    auto paOffset = parameter.Finish();
+    OpBuilder opB(builder);
+    opB.add_main(paOffset.Union());
+    opB.add_type(OpType_Reduction);
+    opB.add_main_type(OpParameter_ReductionParam);
+    builder.Finish(opB.Finish());
+    // TODO: Remove Copy
+    std::shared_ptr<BufferStorage> extra(new BufferStorage);
+    extra->storage = builder.ReleaseRaw(extra->allocated_size, extra->offset);
+    return Variable::create(Expr::create(extra, {x, dim}, 1));
 }
 static VARP _Eltwise(VARP a, VARP b, EltwiseType type, std::vector<float> coeff) {
     std::unique_ptr<OpT> op(new OpT);
@@ -441,6 +481,17 @@ VARP _Log1p(VARP x)
     return _Unary(x, UnaryOpOperation_LOG1P);
 }
 
+/*Computes Gelu of x element-wise.
+Args:
+x: A variable. Must be one of the following types: Halide_Type_Float
+Returns:
+A variable. Has the same type as x .
+*/
+VARP _Gelu(VARP x)
+{
+    return _Unary(x, UnaryOpOperation_GELU);
+}
+
 /*Computes hyperbolic tangent of x element-wise.
 Given an input variable, this function computes hyperbolic tangent of every element in the variable.
 Input range is [-inf, inf] and output range is [-1,1].
@@ -450,9 +501,7 @@ Returns:
 A variable. Has the same type as x.
 */
 VARP _Tanh(VARP x) {
-    std::unique_ptr<OpT> op(new OpT);
-    op->type = OpType_TanH;
-    return (Variable::create(Expr::create(op.get(), {x})));
+    return _Unary(x, UnaryOpOperation_TANH);
 }
 /*Computes sigmoid of x element-wise.
 Args:
@@ -461,9 +510,7 @@ Returns:
 A variable. Has the same type as x.
 */
 VARP _Sigmoid(VARP x) {
-    std::unique_ptr<OpT> op(new OpT);
-    op->type = OpType_Sigmoid;
-    return (Variable::create(Expr::create(op.get(), {x})));
+    return _Unary(x, UnaryOpOperation_SIGMOID);
 }
 
 /*Computes ((exponential of x) - 1) element-wise.
@@ -706,6 +753,40 @@ A variable. Has the same type as x.
 
 VARP _NotEqual(VARP x, VARP y) {
     return _Binary(x, y, BinaryOpOperation_NOTEQUAL);
+}
+
+/*Returns the truth value of x & y element-wise.
+Args:
+x: A variable. Must be one of the following types: Halide_Type_Int
+y: A variable. Must have the same type as x.
+Returns:
+A variable. Has the same type as x.
+*/
+
+VARP _BitwiseAnd(VARP x, VARP y) {
+    return _Binary(x, y, BinaryOpOperation_BITWISE_AND);
+}
+
+/*Returns the truth value of x | y element-wise.
+Args:
+x: A variable. Must be one of the following types: Halide_Type_Int
+y: A variable. Must have the same type as x.
+Returns:
+A variable. Has the same type as x.
+*/
+VARP _BitwiseOr(VARP x, VARP y) {
+    return _Binary(x, y, BinaryOpOperation_BITWISE_OR);
+}
+
+/*Returns the truth value of x ^ y element-wise.
+Args:
+x: A variable. Must be one of the following types: Halide_Type_Int
+y: A variable. Must have the same type as x.
+Returns:
+A variable. Has the same type as x.
+*/
+VARP _BitwiseXor(VARP x, VARP y) {
+    return _Binary(x, y, BinaryOpOperation_BITWISE_XOR);
 }
 
 /*Computes the sum of elements across dimensions of a variable
@@ -955,6 +1036,7 @@ Returns:
 A variable of type int.
 */
 VARP _ArgMax(VARP input, int axis) {
+    input = _checkNC4HW4(input);
     std::unique_ptr<OpT> op(new OpT);
     op->main.type                         = OpParameter_ArgMax;
     op->type                              = OpType_ArgMax;
@@ -976,6 +1058,7 @@ Returns:
 A variable of type int.
 */
 VARP _ArgMin(VARP input, int axis) {
+    input = _checkNC4HW4(input);
     std::unique_ptr<OpT> op(new OpT);
     op->main.type                         = OpParameter_ArgMax;
     op->type                              = OpType_ArgMin;
@@ -1104,6 +1187,30 @@ VARP _EltwiseMaxInt8(VARP x, VARP y,
                         x_weight, x_bias, x_scale, x_tensorScale,
                         y_weight, y_bias, y_scale, y_tensorScale,
                         output_weight, output_bias, output_scale, output_tensorScale);
+}
+
+VARP _RandomUnifom(VARP shape, halide_type_t dtype, float low, float high, int seed0, int seed1) {
+    flatbuffers::FlatBufferBuilder builder(MNN_DEFAULT_FLATBUFFER_SIZE);
+    RandomUniformBuilder paramBuilder(builder);
+    paramBuilder.add_type(_convertDataType(dtype));
+    paramBuilder.add_low(low);
+    paramBuilder.add_high(high);
+    paramBuilder.add_seed(seed0);
+    paramBuilder.add_seed2(seed1);
+    auto parmOffset = paramBuilder.Finish();
+    OpBuilder opB(builder);
+    opB.add_type(OpType_RandomUniform);
+    opB.add_main(parmOffset.Union());
+    opB.add_main_type(OpParameter_RandomUniform);
+    builder.Finish(opB.Finish());
+    std::shared_ptr<BufferStorage> extra(new BufferStorage);
+    extra->storage = builder.ReleaseRaw(extra->allocated_size, extra->offset);
+    return Variable::create(Expr::create(extra, {shape}, 1));
+}
+
+
+VARP _Mod(VARP x, VARP y) {
+    return _Binary(x, y, BinaryOpOperation_MOD);
 }
 
 } // namespace Express

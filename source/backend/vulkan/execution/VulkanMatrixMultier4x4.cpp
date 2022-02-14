@@ -6,7 +6,7 @@
 //  Copyright © 2018, Alibaba Group Holding Limited
 //
 
-#include "backend/vulkan/execution/VulkanMatrixMultier4x4.hpp"
+#include "VulkanMatrixMultier4x4.hpp"
 #include "core/Macro.h"
 namespace MNN {
 struct constUniform {
@@ -48,7 +48,7 @@ VulkanMatrixMultier4x4::VulkanMatrixMultier4x4(VulkanBackend* backend, const flo
                                             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
         bool supportFp16 = backend->getMemoryPool().permitFp16();
-        if ((backend->gpuType() == VulkanBackend::ADRENO || backend->gpuType() == VulkanBackend::MALI) && supportFp16) {
+        if ((backend->gpuType() == VulkanRuntime::ADRENO || backend->gpuType() == VulkanRuntime::MALI) && supportFp16) {
             mPipeline = mBackend->getPipeline("glsl_gemm16x16_FP16_comp", types);
         } else {
             mPipeline = mBackend->getPipeline("glsl_gemm16x16_comp", types);
@@ -74,6 +74,12 @@ void VulkanMatrixMultier4x4::prepare(const VulkanCommandPool::Buffer* commandBuf
     if (nullptr == src) {
         mSource = std::make_shared<VulkanImage>(mBackend->getDynamicMemoryPool(), false, std::vector<int>{sw, sh * mDepth});
     }
+    if (VK_IMAGE_LAYOUT_UNDEFINED == mSource->currentLayout()) {
+        mSource->barrierRead(commandBuffer->get());
+    }
+    if (VK_IMAGE_LAYOUT_UNDEFINED == mDest->currentLayout()) {
+        mDest->barrierRead(commandBuffer->get());
+    }
     MNN_ASSERT(nullptr != mSource && nullptr != mDest);
     if (nullptr == src) {
         mSource->release();
@@ -81,11 +87,6 @@ void VulkanMatrixMultier4x4::prepare(const VulkanCommandPool::Buffer* commandBuf
     if (nullptr == dst) {
         mDest->release();
     }
-
-    commandBuffer->barrierImageIfNeeded(mDest.get(), VK_IMAGE_LAYOUT_GENERAL);
-    commandBuffer->barrierImageIfNeeded(mSource.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    commandBuffer->barrierImageIfNeeded(mKernel.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
     mDescriptorSet->writeImage(mDest->view(), mSampler->get(), VK_IMAGE_LAYOUT_GENERAL, 0);
     mDescriptorSet->writeImage(mSource->view(), mSampler->get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1);
     mDescriptorSet->writeImage(mKernel->view(), mSampler->get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 2);
@@ -104,6 +105,9 @@ void VulkanMatrixMultier4x4::prepare(const VulkanCommandPool::Buffer* commandBuf
 
 void VulkanMatrixMultier4x4::compute(const VulkanCommandPool::Buffer* commandBuffer) const {
     mPipeline->bind(commandBuffer->get(), mDescriptorSet->get());
+    mDest->barrierWrite(commandBuffer->get());
+    mSource->barrierRead(commandBuffer->get());
+    mKernel->barrierRead(commandBuffer->get());
     vkCmdDispatch(commandBuffer->get(), UP_DIV(mOutputWidth, 8), UP_DIV(mOutputHeight / 4, 8), mDepth);
 }
 

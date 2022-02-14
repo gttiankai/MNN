@@ -8,7 +8,7 @@
 
 #include "backend/vulkan/component/VulkanDevice.hpp"
 #include <string.h>
-
+//#define MNN_VULKAN_PRINT_EXT
 namespace MNN {
 VulkanDevice::VulkanDevice(std::shared_ptr<VulkanInstance> instance, const std::vector<const char*>& device_extensions)
     : mOwner(true),
@@ -61,6 +61,10 @@ VulkanDevice::VulkanDevice(std::shared_ptr<VulkanInstance> instance, const std::
         /* .queueCount       = */ 1,
         /* .pQueuePriorities = */ priorities,
     };
+    VkPhysicalDeviceFeatures mDeviceFeature;
+    ::memset(&mDeviceFeature, 0, sizeof(mDeviceFeature));
+    mDeviceFeature.shaderStorageImageWriteWithoutFormat = VK_TRUE;
+    //vkGetPhysicalDeviceFeatures(mPhysicalDevice, &mDeviceFeature);
 
     VkDeviceCreateInfo deviceCreateInfo{
         /* .sType                   = */ VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -72,12 +76,22 @@ VulkanDevice::VulkanDevice(std::shared_ptr<VulkanInstance> instance, const std::
         /* .ppEnabledLayerNames     = */ nullptr,
         /* .enabledExtensionCount   = */ static_cast<uint32_t>(device_extensions.size()),
         /* .ppEnabledExtensionNames = */ device_extensions.data(),
-        /* .pEnabledFeatures        = */ nullptr,
+        /* .pEnabledFeatures        = */ &mDeviceFeature,
     };
-
     CALL_VK(vkCreateDevice(mPhysicalDevice, &deviceCreateInfo, nullptr, &mDevice));
     vkGetPhysicalDeviceProperties(mPhysicalDevice, &mDeviceProty);
+    vkGetPhysicalDeviceMemoryProperties(mPhysicalDevice, &mMemoryProty);
     getDeviceQueue(mQueueFamilyIndex, 0, mQueue);
+#ifdef MNN_VULKAN_PRINT_EXT
+    uint32_t pPropertyCount;
+    vkEnumerateInstanceExtensionProperties(nullptr, &pPropertyCount, nullptr);
+    std::vector<VkExtensionProperties> properties(pPropertyCount);
+    vkEnumerateInstanceExtensionProperties(nullptr, &pPropertyCount, properties.data());
+    for (int i=0; i<pPropertyCount; ++i) {
+      auto& p = properties[i];
+      FUNC_PRINT_ALL(p.extensionName, s);
+    }
+#endif
 }
 
 VulkanDevice::VulkanDevice(std::shared_ptr<VulkanInstance> instance, VkPhysicalDevice physicalDevice, VkDevice device,
@@ -89,6 +103,7 @@ VulkanDevice::VulkanDevice(std::shared_ptr<VulkanInstance> instance, VkPhysicalD
       mDevice(device),
       mQueue(queue) {
     vkGetPhysicalDeviceProperties(mPhysicalDevice, &mDeviceProty);
+    vkGetPhysicalDeviceMemoryProperties(mPhysicalDevice, &mMemoryProty);
 }
 
 VulkanDevice::~VulkanDevice() {
@@ -159,10 +174,6 @@ const VkResult VulkanDevice::flushMappedMemoryRanges(const VkMappedMemoryRange* 
 const VkResult VulkanDevice::invalidateMappedMemoryRanges(const VkMappedMemoryRange* memoryRanges,
                                                           const uint32_t memoryRangeCount) const {
     return vkInvalidateMappedMemoryRanges(mDevice, memoryRangeCount, memoryRanges);
-}
-
-const void VulkanDevice::getPhysicalDeviceMemoryProperties(VkPhysicalDeviceMemoryProperties& memoryProperties) const {
-    vkGetPhysicalDeviceMemoryProperties(mPhysicalDevice, &memoryProperties);
 }
 
 const VkResult VulkanDevice::createCommandPool(VkCommandPool& cmdPool, const VkCommandPoolCreateFlags flags,
@@ -297,7 +308,7 @@ const VkResult VulkanDevice::createImage(VkImage& image, const VkImageType image
     info.format            = format;
     info.tiling            = VK_IMAGE_TILING_OPTIMAL;
     info.initialLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
-    info.usage             = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    info.usage             = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     info.samples           = VK_SAMPLE_COUNT_1_BIT;
     info.sharingMode       = VK_SHARING_MODE_EXCLUSIVE;
     info.pNext             = nullptr;
@@ -481,16 +492,6 @@ const VkResult VulkanDevice::createDescriptorPool(VkDescriptorPool& descriptorPo
     return vkCreateDescriptorPool(mDevice, &poolInfo, allocator, &descriptorPool);
 }
 
-const VkResult VulkanDevice::allocateDescriptorSets(VkDescriptorSet* pDescriptorSets,
-                                                    const VkDescriptorSetAllocateInfo* allocateInfo) const {
-    return vkAllocateDescriptorSets(mDevice, allocateInfo, pDescriptorSets);
-}
-
-const VkResult VulkanDevice::allocateDescriptorSet(VkDescriptorSet& descriptorSet,
-                                                   const VkDescriptorSetAllocateInfo& allocateInfo) const {
-    return allocateDescriptorSets(&descriptorSet, &allocateInfo);
-}
-
 const VkResult VulkanDevice::allocateDescriptorSet(VkDescriptorSet& descriptorSet, const VkDescriptorPool& descPool,
                                                    const VkDescriptorSetLayout& setLayout) const {
     VkDescriptorSetAllocateInfo allocInfo;
@@ -500,8 +501,7 @@ const VkResult VulkanDevice::allocateDescriptorSet(VkDescriptorSet& descriptorSe
     allocInfo.descriptorPool     = descPool;
     allocInfo.descriptorSetCount = 1;
     allocInfo.pSetLayouts        = &setLayout;
-    ;
-    return allocateDescriptorSet(descriptorSet, allocInfo);
+    return vkAllocateDescriptorSets(mDevice, &allocInfo, &descriptorSet);
 }
 
 const VkResult VulkanDevice::freeDescriptorSets(const VkDescriptorPool& descriptorPool,

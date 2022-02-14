@@ -6,8 +6,8 @@
 //  Copyright © 2018, Alibaba Group Holding Limited
 //
 
+#include "shape/SizeComputer.hpp"
 #include "core/Macro.h"
-#include "core/SizeComputer.hpp"
 #include "math.h"
 
 namespace MNN {
@@ -28,9 +28,13 @@ static int computeSize(const MNN::Op* op, const std::vector<Tensor*>& inputs, co
 
     MNN_ASSERT(0 != delta);
     if (delta > 0) {
-        MNN_ASSERT(limit >= start);
+        if (limit < start) {
+            return 0;
+        }
     } else {
-        MNN_ASSERT(start >= limit);
+        if (limit > start) {
+            return 0;
+        }
     }
 
     int32_t size = ceilf(fabsf((limit - start) / delta));
@@ -41,16 +45,13 @@ class RangeComputer : public SizeComputer {
     virtual bool onComputeSize(const MNN::Op* op, const std::vector<Tensor*>& inputs,
                                const std::vector<Tensor*>& outputs) const override {
         MNN_ASSERT(inputs.size() == 3);
-        auto type       = op->main_as_Range()->Tidx();
         int output_size = 0;
-        switch (type) {
-            case DataType_DT_INT32:
-            case DataType_DT_INT64:
+        switch (inputs[0]->getType().code) {
+            case halide_type_int:
                 output_size = computeSize<int32_t>(op, inputs, outputs);
                 outputs[0]->setType(MNN::DataType_DT_INT32);
                 break;
-            case DataType_DT_FLOAT:
-            case DataType_DT_DOUBLE:
+            case halide_type_float:
                 output_size = computeSize<float>(op, inputs, outputs);
                 outputs[0]->setType(MNN::DataType_DT_FLOAT);
                 break;
@@ -59,7 +60,7 @@ class RangeComputer : public SizeComputer {
         }
         outputs[0]->buffer().dimensions    = 1;
         outputs[0]->buffer().dim[0].extent = output_size;
-        TensorUtils::getDescribe(outputs[0])->dimensionFormat = MNN_DATA_FORMAT_NHWC;
+        TensorUtils::getDescribe(outputs[0])->dimensionFormat = TensorUtils::getDescribe(inputs[0])->dimensionFormat;
 
         return true;
     }

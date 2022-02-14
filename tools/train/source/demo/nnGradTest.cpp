@@ -44,11 +44,10 @@ public:
         convOption.stride     = {2, 2};
         convOption.dilate     = {1, 2};
         convOption.padMode = SAME;
-        auto convModule       = NN::Conv(convOption);
+        std::shared_ptr<Module> convModule(NN::Conv(convOption));
 
-        std::shared_ptr<SGD> sgd(new SGD);
+        std::shared_ptr<SGD> sgd(new SGD(convModule));
         sgd->setLearningRate(0.01f);
-        sgd->append(convModule->parameters());
         std::vector<float> randomInputs(1 * ic * ih * iw);
         for (int i = 0; i < randomInputs.size(); ++i) {
             randomInputs[i] = ((float)(gDevice() % 2000) - 1000.0f) / 1000.0f;
@@ -107,11 +106,10 @@ public:
         convOption.stride     = {2, 2};
         convOption.dilate     = {1, 2};
         convOption.depthwise  = true;
-        auto convModule       = NN::Conv(convOption);
+        std::shared_ptr<Module> convModule(NN::Conv(convOption));
 
-        std::shared_ptr<SGD> sgd(new SGD);
+        std::shared_ptr<SGD> sgd(new SGD(convModule));
         sgd->setLearningRate(0.1f);
-        sgd->append(convModule->parameters());
         sgd->setWeightDecay(0.0f);
         sgd->setMomentum(0.0f);
 
@@ -178,11 +176,11 @@ public:
         convOption.kernelSize = {kw, kh};
         convOption.stride     = {2, 2};
         convOption.dilate     = {1, 2};
-        auto convModule       = NN::ConvTranspose(convOption);
+        std::shared_ptr<Module> convModule(NN::ConvTranspose(convOption));
 
         convOption.depthwise = true;
         convOption.channel   = {oc, oc};
-        auto convModule2     = NN::ConvTranspose(convOption, false);
+        std::shared_ptr<Module> convModule2(NN::ConvTranspose(convOption, false));
         VARP weightTarget2;
         {
             int weightSize = oc * kw * kh;
@@ -194,9 +192,8 @@ public:
             weightTarget2 = _Const(targetVecs.data(), {oc, 1, kh, kw}, NCHW);
         }
 
-        std::shared_ptr<ADAM> sgd(new ADAM);
+        std::shared_ptr<ADAM> sgd(new ADAM(convModule));
         sgd->setLearningRate(0.01f);
-        sgd->append(convModule->parameters());
         std::vector<float> randomInputs(1 * ic * ih * iw);
         for (int i = 0; i < randomInputs.size(); ++i) {
             randomInputs[i] = ((float)(gDevice() % 2000) - 1000.0f) / 1000.0f;
@@ -248,9 +245,9 @@ public:
             }
             auto weightTarget = _Const(targetVecs.data(), {l, h}, NCHW);
             auto weightOrigin = _TrainableParam(0.01f, {l, h}, NCHW);
-            std::shared_ptr<SGD> sgd(new SGD);
+            std::shared_ptr<Module> _m(Module::createEmpty({weightOrigin}));
+            std::shared_ptr<SGD> sgd(new SGD(_m));
             sgd->setLearningRate(0.01f);
-            sgd->append({weightOrigin});
             std::vector<float> randomInputs(e * l);
             for (int i = 0; i < randomInputs.size(); ++i) {
                 randomInputs[i] = ((float)(gDevice() % 2000) - 1000.0f) / 1000.0f;
@@ -284,9 +281,9 @@ public:
             }
             auto weightTarget = _Const(targetVecs.data(), {b, l, h}, NCHW);
             auto weightOrigin = _TrainableParam(0.01f, {b, l, h}, NCHW);
-            std::shared_ptr<ADAM> sgd(new ADAM);
+            std::shared_ptr<Module> _m(Module::createEmpty({weightOrigin}));
+            std::shared_ptr<ADAM> sgd(new ADAM(_m));
             sgd->setLearningRate(0.01f);
-            sgd->append({weightOrigin});
             std::vector<float> randomInputs(b * e * l);
             for (int i = 0; i < randomInputs.size(); ++i) {
                 randomInputs[i] = ((float)(gDevice() % 2000) - 1000.0f) / 1000.0f;
@@ -311,8 +308,40 @@ public:
         return 0;
     }
 };
+class GatherGradTest : public DemoUnit {
+public:
+    virtual int run(int argc, const char* argv[]) override {
+        MNN_PRINT("Test grad for Gather\n");
+        {
+            // set input data
+            const float inpudata[] = {1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0,  8.0, 9.0, 10.0, 11.0, 12.0, 13.0,
+                                      14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0, 21,  0,   22.0, 23.0, 24.0};
+            std::vector<float> inputDataRaw(0.0f, sizeof(inpudata) / sizeof(float));
+            auto params = _TrainableParam(inputDataRaw.data(), {4, 3, 2}, NCHW, halide_type_of<float>());
+            const int indices_data[]                = {1, 0, 1, 0};
+            const std::vector<float> expectedOutput = {7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0,
+                                                       7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
+            std::shared_ptr<Module> _m(Module::createEmpty({params}));
+            std::shared_ptr<SGD> sgd(new SGD(_m));
+            sgd->setLearningRate(0.01f);
+            for (int i = 0; i < 1000; ++i) {
+                auto indices                            = _Const(indices_data, {4}, NCHW, halide_type_of<int>());
+                auto output                             = _GatherV2(params, indices, nullptr);
+                output = _Reshape(output, {-1});
+                auto predictValue = _Const(expectedOutput.data(), {(int)expectedOutput.size()}, NCHW);
+                auto loss         = _ReduceMean(_Square(_Subtract(output, predictValue)), {});
+                if (i % 100 == 0) {
+                    MNN_PRINT("Loss = %f\n", loss->readMap<float>()[0]);
+                }
+                sgd->step(loss);
+            }
+        }
+        return 0;
+    }
+};
 
 DemoUnitSetRegister(NNGrad, "NNGrad");
 DemoUnitSetRegister(NNGradV2, "NNGradV2");
 DemoUnitSetRegister(NNGradV3, "NNGradV3");
 DemoUnitSetRegister(MatMulGradTest, "MatMulGradTest");
+DemoUnitSetRegister(GatherGradTest, "GatherGradTest");

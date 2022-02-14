@@ -6,8 +6,8 @@
 //  Copyright © 2018, Alibaba Group Holding Limited
 //
 
+#include "shape/SizeComputer.hpp"
 #include "core/Macro.h"
-#include "core/SizeComputer.hpp"
 #include "core/TensorUtils.hpp"
 
 namespace MNN {
@@ -17,9 +17,6 @@ public:
                                const std::vector<Tensor*>& outputs) const override {
         auto& ib = inputs[0]->buffer();
         auto& ob = outputs[0]->buffer();
-        if (ib.dimensions <= 1) {
-            return false;
-        }
         auto info                                             = op->main_as_TensorConvertInfo();
         auto sourceFmt                                        = TensorUtils::getDescribe(inputs[0])->dimensionFormat;
         if (sourceFmt == MNN_DATA_FORMAT_NC4HW4) {

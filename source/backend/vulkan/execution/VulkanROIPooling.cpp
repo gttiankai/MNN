@@ -6,7 +6,7 @@
 //  Copyright © 2018, Alibaba Group Holding Limited
 //
 
-#include "backend/vulkan/execution/VulkanROIPooling.hpp"
+#include "VulkanROIPooling.hpp"
 #include "core/Macro.h"
 
 namespace MNN {
@@ -57,15 +57,19 @@ ErrorCode VulkanROIPooling::onEncode(const std::vector<Tensor*>& inputs, const s
 
     mDescriptorSet.reset(mVulkanROIPoolingPipeline->createSet());
 
-    mDescriptorSet->writeImage(reinterpret_cast<VkImageView>(output->deviceId()), mSampler->get(),
+    mDescriptorSet->writeImage(reinterpret_cast<VulkanTensor*>(output->deviceId())->image()->view(), mSampler->get(),
                                VK_IMAGE_LAYOUT_GENERAL, 0);
-    mDescriptorSet->writeImage(reinterpret_cast<VkImageView>(input->deviceId()), mSampler->get(),
+    mDescriptorSet->writeImage(reinterpret_cast<VulkanTensor*>(input->deviceId())->image()->view(), mSampler->get(),
                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1);
-    mDescriptorSet->writeImage(reinterpret_cast<VkImageView>(roi->deviceId()), mSampler->get(),
+    mDescriptorSet->writeImage(reinterpret_cast<VulkanTensor*>(roi->deviceId())->image()->view(), mSampler->get(),
                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 2);
     mDescriptorSet->writeBuffer(mParamBuffer->buffer(), 3, mParamBuffer->size());
 
     mVulkanROIPoolingPipeline->bind(cmdBuffer->get(), mDescriptorSet->get());
+
+    reinterpret_cast<VulkanTensor*>(output->deviceId())->image()->barrierWrite(cmdBuffer->get());
+    reinterpret_cast<VulkanTensor*>(input->deviceId())->image()->barrierRead(cmdBuffer->get());
+    reinterpret_cast<VulkanTensor*>(roi->deviceId())->image()->barrierRead(cmdBuffer->get());
 
     vkCmdDispatch(cmdBuffer->get(), UP_DIV(output->width(), 8), UP_DIV(output->height(), 8),
                   channelDiv4 * output->batch());
@@ -76,7 +80,7 @@ ErrorCode VulkanROIPooling::onEncode(const std::vector<Tensor*>& inputs, const s
 class VulkanROIPoolingCreator : public VulkanBackend::Creator {
 public:
     virtual VulkanBasicExecution* onCreate(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs, const MNN::Op* op, Backend* bn) const override {
-        return new VulkanROIPooling(bn, op->main_as_RoiPooling()->spatialScale());
+        return new VulkanROIPooling(bn, op->main_as_RoiParameters()->spatialScale());
     }
 };
 

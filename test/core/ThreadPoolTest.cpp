@@ -16,11 +16,11 @@ using namespace MNN;
 class ThreadPoolTest : public MNNTestCase {
 public:
     virtual ~ThreadPoolTest() = default;
-    virtual bool run() {
+    virtual bool run(int precision) {
         std::vector<std::thread> threads;
-        for (int i=0; i<10; ++i) {
+        for (int i = 0; i < 10; ++i) {
             threads.emplace_back([i]() {
-                MNN::ThreadPool::init(10-i);
+                MNN::ThreadPool::init(10 - i);
                 // initializer
                 auto workIndex = ThreadPool::acquireWorkIndex();
                 FUNC_PRINT(workIndex);

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <map>
 #include <numeric>
+#include <cmath>
 #include <MNN/expr/ExprCreator.hpp>
 #include <MNN/MNNDefine.h>
 #include "MNN_generated.h"
@@ -54,16 +55,14 @@ VARP _Input(INTS shape, Dimensionformat data_format, halide_type_t dtype) {
     info.dim = std::move(shape);
     info.order = data_format;
     info.type = dtype;
-    info.ptr = nullptr;
-    return (Variable::create(Expr::create(std::move(info))));
+    return (Variable::create(Expr::create(std::move(info), nullptr, VARP::INPUT)));
 }
 VARP _Scalar(const void* ptr, halide_type_t type) {
     Variable::Info info;
     info.dim = {};
     info.order = NHWC;
     info.type = type;
-    info.ptr = (void*)ptr;
-    return (Variable::create(Expr::create(std::move(info))));
+    return (Variable::create(Expr::create(std::move(info), ptr, VARP::CONSTANT)));
 }
 /*create a constant variable.
 Args:
@@ -79,8 +78,7 @@ VARP _Const(const void* ptr, INTS shape, Dimensionformat format, halide_type_t t
     info.dim = std::move(shape);
     info.order = format;
     info.type = type;
-    info.ptr = (void*)ptr;
-    return (Variable::create(Expr::create(std::move(info))));
+    return (Variable::create(Expr::create(std::move(info), ptr, VARP::CONSTANT)));
 }
 
 VARP _Const(float value, INTS shape, Dimensionformat format) {
@@ -93,8 +91,8 @@ VARP _Const(float value, INTS shape, Dimensionformat format) {
     for (int i = 0; i < info.size; ++i) {
         values[i] = value;
     }
-    info.ptr = (void*)values.data();
-    return (Variable::create(Expr::create(std::move(info))));
+    auto ptr = (void*)values.data();
+    return (Variable::create(Expr::create(std::move(info), ptr, VARP::CONSTANT)));
 }
 
 VARP _TrainableParam(const void* ptr, INTS dims, Dimensionformat format, halide_type_t type) {
@@ -106,6 +104,23 @@ VARP _TrainableParam(float value, INTS dims, Dimensionformat format) {
     auto v = _Const(value, dims, format);
     v.fix(VARP::TRAINABLE);
     return v;
+}
+VARP _InnerProduct(std::vector<float>&& weight, std::vector<float>&& bias, VARP x, INTS outputShape) {
+    std::unique_ptr<OpT> ipOp(new OpT);
+    ipOp->type = OpType_InnerProduct;
+    ipOp->main.type  = OpParameter_InnerProduct;
+    ipOp->main.value = new InnerProductT;
+    auto ipParam        = ipOp->main.AsInnerProduct();
+
+    ipParam->outputCount = outputShape[1];
+    if(!bias.empty()) {
+        ipParam->biasTerm = 1;
+    }
+    ipParam->weightSize = (int)weight.size();
+    
+    ipParam->weight = std::move(weight);
+    ipParam->bias = std::move(bias);
+    return (Variable::create(Expr::create(ipOp.get(), {x})));
 }
 
 VARP _Conv(VARP weight, VARP bias, VARP x, PaddingMode pad, INTS stride, INTS dilate, int group, INTS pads) {
@@ -183,7 +198,7 @@ VARP _Conv(std::vector<float>&& weight, std::vector<float>&& bias, VARP x, INTS 
     return (Variable::create(Expr::create(convOp.get(), {x})));
 }
 VARP _Conv(std::vector<int8_t>&& weight, std::vector<float>&& bias, VARP x, INTS channel, INTS kernelSize,
-           PaddingMode pad, INTS stride, INTS dilate, int group, INTS pads, bool relu, bool relu6) {
+           PaddingMode pad, INTS stride, INTS dilate, int group, INTS pads, bool relu, bool relu6, int nbits) {
     std::unique_ptr<OpT> convOp(new OpT);
     convOp->type = OpType_Convolution;
     if (channel[0] == channel[1] && channel[0] == group) {
@@ -285,6 +300,42 @@ VARP _Deconv(VARP weight, VARP bias, VARP x, PaddingMode pad, INTS stride, INTS 
     return (Variable::create(Expr::create(std::move(convOp), {x, weight})));
 }
 
+VARP _Deconv(std::vector<float>&& weight, std::vector<float>&& bias, VARP x, INTS channel, INTS kernelSize,
+           PaddingMode pad, INTS stride, INTS dilate, int group, INTS pads, bool relu, bool relu6) {
+    std::unique_ptr<OpT> convOp(new OpT);
+    convOp->type = OpType_Deconvolution;
+    if (channel[0] == channel[1] && channel[0] == group) {
+        convOp->type = OpType_DeconvolutionDepthwise;
+    }
+    convOp->main.type  = OpParameter_Convolution2D;
+    convOp->main.value = new Convolution2DT;
+    auto conv2D        = convOp->main.AsConvolution2D();
+    conv2D->common.reset(new Convolution2DCommonT);
+    conv2D->common->padMode     = _convertPadMode(pad);
+    if (pads.size() == 2) {
+        conv2D->common->padX        = pads[0];
+        conv2D->common->padY        = pads[1];
+    } else {
+        conv2D->common->pads = std::move(pads);
+    }
+    conv2D->common->strideX     = stride[0];
+    conv2D->common->strideY     = stride[1];
+    conv2D->common->group       = group;
+    conv2D->common->outputCount = channel[1];
+    conv2D->common->inputCount  = channel[0];
+    conv2D->common->dilateX     = dilate[0];
+    conv2D->common->dilateY     = dilate[1];
+    conv2D->common->kernelX     = kernelSize[0];
+    conv2D->common->kernelY     = kernelSize[1];
+    conv2D->common->relu6 = relu6;
+    conv2D->common->relu = relu;
+    MNN_ASSERT(weight.size() == channel[1] * (channel[0] / group) * kernelSize[0] * kernelSize[1]);
+    conv2D->weight = std::move(weight);
+    MNN_ASSERT(bias.size() == channel[1]);
+    conv2D->bias = std::move(bias);
+    return (Variable::create(Expr::create(convOp.get(), {x})));
+}
+
 static VARP _Pool(VARP x, INTS kernel, INTS stride, PoolType type, PaddingMode pad, INTS pads) {
     std::unique_ptr<OpT> pool(new OpT);
     pool->type       = OpType_Pooling;
@@ -342,12 +393,15 @@ output: A variable with the same type as `x`.
 */
 VARP _Reshape(VARP x, VARP shape) {
     MNN_ASSERT(nullptr != x);
-    MNN_ASSERT(nullptr != x->getInfo());
     std::unique_ptr<OpT> reshape(new OpT);
     reshape->type                      = OpType_Reshape;
     reshape->main.type                 = OpParameter_Reshape;
     reshape->main.value                = new ReshapeT;
-    reshape->main.AsReshape()->dimType = (MNN_DATA_FORMAT)Utils::convertFormat(x->getInfo()->order);
+    if (nullptr != x->getInfo()) {
+        reshape->main.AsReshape()->dimType = (MNN_DATA_FORMAT)Utils::convertFormat(x->getInfo()->order);
+    } else {
+        reshape->main.AsReshape()->dimType = MNN_DATA_FORMAT_NHWC;
+    }
     return (Variable::create(Expr::create(reshape.get(), {x, shape})));
 }
 VARP _Scale(VARP x, int channels, std::vector<float>&& scales, std::vector<float>&& bias) {
@@ -375,15 +429,19 @@ VARP _Relu(VARP x, float slope) {
     relu->main.AsRelu()->slope = slope;
     return (Variable::create(Expr::create(relu.get(), {x})));
 }
-/*Given an input value x， it computes Rectified Linear 6: min(max(x, 0), 6).
+/*Given an input value x, it computes Rectified Linear 6: min(max(x, 0), 6).
 Args:
 x: A variable. 
 Returns:
 output: A variable with the same type as `x`.
 */
-VARP _Relu6(VARP x) {
+VARP _Relu6(VARP x, float minValue, float maxValue) {
     std::unique_ptr<OpT> relu(new OpT);
     relu->type = OpType_ReLU6;
+    relu->main.value = new Relu6T;
+    relu->main.type = OpParameter_Relu6;
+    relu->main.AsRelu6()->maxValue = maxValue;
+    relu->main.AsRelu6()->minValue = minValue;
     return (Variable::create(Expr::create(relu.get(), {x})));
 }
 /*Given an input value x, it computes the output as x if x > 0 and slopes * x if x <= 0. 
@@ -399,7 +457,7 @@ VARP _PRelu(VARP x, std::vector<float>&& slopes) {
     prelu->main.type                  = OpParameter_PRelu;
     prelu->main.value                 = new PReluT;
     prelu->main.AsPRelu()->slope      = slopes;
-    prelu->main.AsPRelu()->slopeCount = slopes.size();
+    prelu->main.AsPRelu()->slopeCount = (int)slopes.size();
     return (Variable::create(Expr::create(prelu.get(), {x})));
 }
 /*Computes softmax activations.
@@ -746,9 +804,12 @@ input: A variable.
 Returns:
 A variable of Halide_Type_Int.
 */ 
-VARP _Shape(VARP input) {
+VARP _Shape(VARP input, bool nchw) {
     std::unique_ptr<OpT> shape(new OpT);
     shape->type = OpType_Shape;
+    if (nchw) {
+        shape->defaultDimentionFormat = MNN_DATA_FORMAT_NCHW;
+    }
     return (Variable::create(Expr::create(std::move(shape), {input})));
 }
 /*Stacks a list of rank-R variables into one rank-(R+1) variable.
@@ -841,7 +902,6 @@ Output: Values from params gathered from indices given by indices.
 VARP _Gather(VARP params, VARP indices) {
     std::unique_ptr<OpT> gather(new OpT);
     gather->type       = OpType_Gather;
-    gather->main.value = new GatherT;
     return (Variable::create(Expr::create(std::move(gather), {params, indices})));
 }
 /*Gather slices from params axis according to indices.
@@ -903,6 +963,21 @@ VARP _Elu(VARP features, float alpha) {
     auto eluParam = new ELUT;
     op->main.type = OpParameter_ELU;
     eluParam->alpha = alpha;
+    op->main.value = eluParam;
+    return (Variable::create(Expr::create(std::move(op), {features})));
+}
+/*Given an input value x, it computes the output as 1.0 if x > threshold and 0.0 if x <= threshold.
+features: A variable of type Halide_Type_Float
+threshold: threshold value
+Returns:
+A variable. Has the same type as features.
+*/
+VARP _Threshold(VARP features, float threshold) {
+    std::unique_ptr<OpT> op(new OpT);
+    op->type = OpType_Threshold;
+    auto eluParam = new ELUT;
+    op->main.type = OpParameter_ELU;
+    eluParam->alpha = threshold;
     op->main.value = eluParam;
     return (Variable::create(Expr::create(std::move(op), {features})));
 }
@@ -1049,7 +1124,6 @@ std::vector<VARP> _Moments(VARP x, INTS axis, VARP shift, bool keepDims) {
     op->main.type = OpParameter_MomentsParam;
     momentsParam->dim = axis;
     momentsParam->keepDims = keepDims;
-    momentsParam->dType = (MNN::DataType)Utils::convertDataType(x->getInfo()->type);
     op->main.value = momentsParam;
     EXPRP expr = Expr::create(std::move(op), {x}, 2);
     std::vector<VARP> res;
@@ -1178,7 +1252,7 @@ std::vector <VARP> _Unstack(VARP value, int axis) {
     MNN_ASSERT(info_value != nullptr);
     auto dims = info_value->dim;
     auto dimsize = dims.size();
-    MNN_ASSERT(dimsize > 1);
+    MNN_ASSERT(dimsize >= 1);
     axis = axis % dimsize;
     if(axis < 0) {
         axis += dimsize;
@@ -1405,7 +1479,7 @@ VARP _ZeroGrad(VARP x) {
 }
 
 VARP _Conv(std::vector<int8_t>&& weight, std::vector<int>&& bias, std::vector<float>&& scale, VARP x, INTS channel, INTS kernelSize,
-                              PaddingMode pad, INTS stride, INTS dilate, int group, INTS pads, bool relu) {
+                              PaddingMode pad, INTS stride, INTS dilate, int group, INTS pads, bool relu, int nbits) {
     std::unique_ptr<OpT> convOp(new OpT);
     convOp->type = OpType_ConvInt8;
     if (channel[0] == channel[1] && channel[0] == group) {
@@ -1416,8 +1490,12 @@ VARP _Conv(std::vector<int8_t>&& weight, std::vector<int>&& bias, std::vector<fl
     auto conv2D        = convOp->main.AsConvolution2D();
     conv2D->common.reset(new Convolution2DCommonT);
     conv2D->common->padMode     = _convertPadMode(pad);
-    conv2D->common->padX        = pads[0];
-    conv2D->common->padY        = pads[1];
+    if (pads.size() == 2) {
+        conv2D->common->padX        = pads[0];
+        conv2D->common->padY        = pads[1];
+    } else {
+        conv2D->common->pads = std::move(pads);
+    }
     conv2D->common->strideX     = stride[0];
     conv2D->common->strideY     = stride[1];
     conv2D->common->group       = group;
@@ -1433,7 +1511,168 @@ VARP _Conv(std::vector<int8_t>&& weight, std::vector<int>&& bias, std::vector<fl
     conv2D->symmetricQuan->bias = std::move(bias);
     conv2D->symmetricQuan->scale = std::move(scale);
     conv2D->symmetricQuan->weight = std::move(weight);
+    conv2D->symmetricQuan->nbits = nbits;
     return (Variable::create(Expr::create(convOp.get(), {x})));
+}
+
+VARP _Conv(std::vector<int8_t>&& weight, std::vector<int>&& bias, std::vector<float>&& scale,
+            VARP x, INTS channel, INTS kernelSize,
+            PaddingMode pad, INTS stride, INTS dilate, int group, INTS pads, bool relu,
+            int8_t inputZeroPoint, int8_t outputZeroPoint,
+            int8_t minValue, int8_t maxValue, bool accumulateToInt16) {
+    std::unique_ptr<OpT> convOp(new OpT);
+    convOp->type = OpType_ConvInt8;
+    if (channel[0] == channel[1] && channel[0] == group) {
+        convOp->type = OpType_DepthwiseConvInt8;
+    }
+    convOp->main.type  = OpParameter_Convolution2D;
+    convOp->main.value = new Convolution2DT;
+    auto conv2D        = convOp->main.AsConvolution2D();
+    conv2D->common.reset(new Convolution2DCommonT);
+    conv2D->common->padMode     = _convertPadMode(pad);
+    if (pads.size() == 2) {
+        conv2D->common->padX        = pads[0];
+        conv2D->common->padY        = pads[1];
+    } else {
+        conv2D->common->pads = std::move(pads);
+    }
+    conv2D->common->strideX     = stride[0];
+    conv2D->common->strideY     = stride[1];
+    conv2D->common->group       = group;
+    conv2D->common->outputCount = channel[1];
+    conv2D->common->inputCount  = channel[0];
+    conv2D->common->dilateX     = dilate[0];
+    conv2D->common->dilateY     = dilate[1];
+    conv2D->common->kernelX     = kernelSize[0];
+    conv2D->common->kernelY     = kernelSize[1];
+    conv2D->common->relu = relu;
+    MNN_ASSERT(weight.size() >= channel[1] * (channel[0] / group) * kernelSize[0] * kernelSize[1]);
+    conv2D->symmetricQuan.reset(new QuantizedFloatParamT);
+    if (bias.size() == 0) {
+        bias.resize(channel[1]);
+        std::fill(bias.begin(), bias.end(), 0);
+    }
+    conv2D->symmetricQuan->bias = std::move(bias);
+    conv2D->symmetricQuan->scale = std::move(scale);
+    conv2D->symmetricQuan->zeroPoint = std::move(inputZeroPoint);
+    conv2D->symmetricQuan->outputZeroPoint = std::move(outputZeroPoint);
+    MNN_ASSERT(maxValue > minValue);
+    conv2D->symmetricQuan->clampMin = minValue;
+    conv2D->symmetricQuan->clampMax = maxValue;
+    conv2D->symmetricQuan->weight = std::move(weight);
+
+    if (accumulateToInt16) {
+        conv2D->symmetricQuan->method = MNN::QuantizeAlgo::QuantizeAlgo_OVERFLOW_AWARE;
+    }
+
+    return (Variable::create(Expr::create(convOp.get(), {x})));
+}
+
+VARP _Conv(std::vector<int8_t>&& weight, std::vector<float>&& bias, std::vector<float>&& weightScale,
+            VARP x, INTS channel, INTS kernelSize,
+            PaddingMode pad, INTS stride, INTS dilate, int group, INTS pads, bool relu,
+            float scaleIn, float scaleOut,
+            int8_t inputZeroPoint, int8_t outputZeroPoint,
+            int8_t minValue, int8_t maxValue, float weightClampValue, bool accumulateToInt16) {
+    std::unique_ptr<OpT> convOp(new OpT);
+    convOp->type = OpType_ConvInt8;
+    if (channel[0] == channel[1] && channel[0] == group) {
+        convOp->type = OpType_DepthwiseConvInt8;
+    }
+    convOp->main.type  = OpParameter_Convolution2D;
+    convOp->main.value = new Convolution2DT;
+    auto conv2D        = convOp->main.AsConvolution2D();
+    conv2D->common.reset(new Convolution2DCommonT);
+    conv2D->common->padMode     = _convertPadMode(pad);
+    if (pads.size() == 2) {
+        conv2D->common->padX        = pads[0];
+        conv2D->common->padY        = pads[1];
+    } else {
+        conv2D->common->pads = std::move(pads);
+    }
+    conv2D->common->strideX     = stride[0];
+    conv2D->common->strideY     = stride[1];
+    conv2D->common->group       = group;
+    conv2D->common->outputCount = channel[1];
+    conv2D->common->inputCount  = channel[0];
+    conv2D->common->dilateX     = dilate[0];
+    conv2D->common->dilateY     = dilate[1];
+    conv2D->common->kernelX     = kernelSize[0];
+    conv2D->common->kernelY     = kernelSize[1];
+    conv2D->common->relu = relu;
+    MNN_ASSERT(weight.size() == channel[1] * (channel[0] / group) * kernelSize[0] * kernelSize[1]);
+    conv2D->symmetricQuan.reset(new QuantizedFloatParamT);
+    if (bias.size() == 0) {
+        bias.resize(channel[1]);
+        std::fill(bias.begin(), bias.end(), 0);
+    }
+
+    conv2D->bias = bias;
+    
+    conv2D->symmetricQuan->weight = std::move(weight);
+    conv2D->symmetricQuan->zeroPoint = std::move(inputZeroPoint);
+    conv2D->symmetricQuan->outputZeroPoint = std::move(outputZeroPoint);
+    MNN_ASSERT(maxValue > minValue);
+    conv2D->symmetricQuan->clampMin = minValue;
+    conv2D->symmetricQuan->clampMax = maxValue;
+    conv2D->symmetricQuan->nbits = int(std::log(weightClampValue * 2 + 2) / std::log(2.0f));
+
+    // const int kn = conv2D->common->outputCount;
+    // const int ks = weight.size() / kn;
+    // std::vector<float> scales(kn, 1.0f);
+    // std::vector<float> weightFloat;
+    // for (int i = 0; i < weight.size(); i++) {
+    //     weightFloat.emplace_back(weight[i] * weightScale[i / ks]);
+    // }
+    // conv2D->quanParameter = IDSTEncoder::encode(weightFloat, weightScale, ks, kn, false, weight.data(), -int(weightClampValue));
+
+    conv2D->quanParameter.reset(new IDSTQuanT);
+    conv2D->quanParameter->alpha = std::move(weightScale);
+    conv2D->quanParameter->scaleIn = scaleIn;
+    conv2D->quanParameter->scaleOut = scaleOut;
+    conv2D->quanParameter->aMin = -int(weightClampValue);
+
+    if (accumulateToInt16) {
+        conv2D->symmetricQuan->method = MNN::QuantizeAlgo::QuantizeAlgo_OVERFLOW_AWARE;
+    }
+
+    return (Variable::create(Expr::create(convOp.get(), {x})));
+}
+
+VARP _CosineSimilarity(VARP input0, VARP input1, VARP inputDim) {
+    std::unique_ptr<MNN::OpT> cosineSimilarityOp(new MNN::OpT);
+    cosineSimilarityOp->type = MNN::OpType_CosineSimilarity;
+    return (Variable::create(Expr::create(std::move(cosineSimilarityOp), {input0, input1, inputDim})));
+}
+
+VARP _GridSample(VARP input, VARP grid, InterpolationMethod mode, GridSamplePaddingMode paddingMode, bool alignCorners) {
+    std::unique_ptr<OpT> op(new OpT);
+    op->type                                       = OpType_GridSample;
+    op->main.type                                  = OpParameter_GridSample;
+    op->main.value                                 = new GridSampleT;
+    switch (mode) {
+        case NEAREST:
+            op->main.AsGridSample()->mode = SampleMode_NEAREST;
+            break;
+        case BILINEAR:
+        default:
+            op->main.AsGridSample()->mode = SampleMode_BILINEAR;
+            break;
+    }
+    switch (paddingMode) {
+        case GRID_SAMPLE_PADDING_BORDER:
+            op->main.AsGridSample()->paddingMode = BorderMode_CLAMP;
+            break;
+        case GRID_SAMPLE_PADDING_REFLECTION:
+            op->main.AsGridSample()->paddingMode = BorderMode_REFLECTION;
+            break;
+        case GRID_SAMPLE_PADDING_ZEROS:
+        default:
+            op->main.AsGridSample()->paddingMode = BorderMode_ZEROS;
+            break;
+    }
+    op->main.AsGridSample()->alignCorners = alignCorners;
+    return (Variable::create(Expr::create(std::move(op), {input, grid})));
 }
 
 VARP _FloatToInt8(VARP x, VARP scale, char minValue/*For future*/, char maxValue/*For future*/) {
@@ -1444,11 +1683,11 @@ VARP _FloatToInt8(VARP x, VARP scale, char minValue/*For future*/, char maxValue
         MNN_ERROR("Error for FloatToInt8 because var not ready\n");
         return nullptr;
     }
-    if (xInfo->order != NC4HW4 || xInfo->type.code != halide_type_float || xInfo->dim.size() < 4) {
+    if (xInfo->order != NC4HW4 || xInfo->type.code != halide_type_float) {
         MNN_ERROR("Not Support Input for FloatToInt8 because var not NC4HW4 or not float\n");
         return nullptr;
     }
-    if (scaleInfo->size != xInfo->dim[1]) {
+    if ((scaleInfo->size != xInfo->dim[1]) && (scaleInfo->size != 1)) {
         MNN_ERROR("Scale's size not match input's channel: %d - %d\n", scaleInfo->size, xInfo->dim[1]);
         return nullptr;
     }
@@ -1460,6 +1699,36 @@ VARP _FloatToInt8(VARP x, VARP scale, char minValue/*For future*/, char maxValue
     ::memcpy(op->main.AsQuantizedFloatParam()->tensorScale.data(), scalePtr, scaleInfo->size * sizeof(float));
     return Variable::create(Expr::create(op.get(), {x}));
 }
+
+VARP _FloatToInt8(VARP x, VARP scale, int8_t minValue, int8_t maxValue, int8_t zeroPoint) {
+    auto xInfo = x->getInfo();
+    auto scaleInfo = scale->getInfo();
+    auto scalePtr = scale->readMap<float>();
+    if (nullptr == scalePtr || nullptr == xInfo || nullptr == scaleInfo) {
+        MNN_ERROR("Error for FloatToInt8 because var not ready\n");
+        return nullptr;
+    }
+    if (xInfo->order != NC4HW4 || xInfo->type.code != halide_type_float) {
+        MNN_ERROR("Not Support Input for FloatToInt8 because var not NC4HW4 or not float\n");
+        return nullptr;
+    }
+    if ((scaleInfo->size != xInfo->dim[1]) && (scaleInfo->size != 1)) {
+        MNN_ERROR("Scale's size not match input's channel: %d - %d\n", scaleInfo->size, xInfo->dim[1]);
+        return nullptr;
+    }
+    std::unique_ptr<OpT> op(new OpT);
+    op->type = OpType_FloatToInt8;
+    op->main.type = OpParameter_QuantizedFloatParam;
+    op->main.value = new QuantizedFloatParamT;
+    op->main.AsQuantizedFloatParam()->tensorScale.resize(scaleInfo->size);
+    ::memcpy(op->main.AsQuantizedFloatParam()->tensorScale.data(), scalePtr, scaleInfo->size * sizeof(float));
+    op->main.AsQuantizedFloatParam()->zeroPoint = zeroPoint;
+    MNN_ASSERT(maxValue > minValue);
+    op->main.AsQuantizedFloatParam()->clampMin = int8_t(minValue);
+    op->main.AsQuantizedFloatParam()->clampMax = int8_t(maxValue);
+    return Variable::create(Expr::create(op.get(), {x}));
+}
+
 VARP _Int8ToFloat(VARP x, VARP scale) {
     auto xInfo = x->getInfo();
     auto scaleInfo = scale->getInfo();
@@ -1472,7 +1741,7 @@ VARP _Int8ToFloat(VARP x, VARP scale) {
         MNN_ERROR("Not Support Input for _Int8ToFloat because var not NC4HW4 or not int8\n");
         return nullptr;
     }
-    if (scaleInfo->size != xInfo->dim[1]) {
+    if ((scaleInfo->size != xInfo->dim[1]) && (scaleInfo->size != 1)) {
         MNN_ERROR("_Int8ToFloat Scale's size not match input's channel\n");
         return nullptr;
     }
@@ -1485,10 +1754,80 @@ VARP _Int8ToFloat(VARP x, VARP scale) {
     return Variable::create(Expr::create(op.get(), {x}));
 }
 
+VARP _Int8ToFloat(VARP x, VARP scale, int8_t zeroPoint) {
+    auto xInfo = x->getInfo();
+    auto scaleInfo = scale->getInfo();
+    auto scalePtr = scale->readMap<float>();
+    if (nullptr == scalePtr || nullptr == xInfo || nullptr == scaleInfo) {
+        MNN_ERROR("Error for _Int8ToFloat because var not ready\n");
+        return nullptr;
+    }
+    if (xInfo->order != NC4HW4 || xInfo->type.code != halide_type_int) {
+        MNN_ERROR("Not Support Input for _Int8ToFloat because var not NC4HW4 or not int8\n");
+        return nullptr;
+    }
+    if ((scaleInfo->size != xInfo->dim[1]) && (scaleInfo->size != 1)) {
+        MNN_ERROR("_Int8ToFloat Scale's size not match input's channel\n");
+        return nullptr;
+    }
+    std::unique_ptr<OpT> op(new OpT);
+    op->type = OpType_Int8ToFloat;
+    op->main.type = OpParameter_QuantizedFloatParam;
+    op->main.value = new QuantizedFloatParamT;
+    op->main.AsQuantizedFloatParam()->tensorScale.resize(scaleInfo->size);
+    ::memcpy(op->main.AsQuantizedFloatParam()->tensorScale.data(), scalePtr, scaleInfo->size * sizeof(float));
+    op->main.AsQuantizedFloatParam()->zeroPoint = zeroPoint;
+    return Variable::create(Expr::create(op.get(), {x}));
+}
+
 VARP _Select(VARP select, VARP input0, VARP input1) {
     std::unique_ptr<MNN::OpT> selectOp(new MNN::OpT);
     selectOp->type = MNN::OpType_Select;
     return (Variable::create(Expr::create(std::move(selectOp), {select, input0, input1})));
+}
+
+std::vector<VARP> _TopKV2(VARP input0, VARP input1) {
+    std::unique_ptr<OpT> op(new OpT);
+    op->type = OpType_TopKV2;
+    auto expr = Expr::create(op.get(), {input0, input1}, 2);
+    std::vector<VARP> res(2);
+    res[0] = Variable::create(expr, 0);
+    res[1] = Variable::create(expr, 1);
+    return res;
+}
+
+VARP _ImageProcess(VARP input, CV::ImageProcess::Config config, CV::Matrix matrix, int oh, int ow, int oc, int dtype, uint8_t padVal) {
+    std::unique_ptr<MNN::OpT> op(new MNN::OpT);
+    op->type = MNN::OpType_ImageProcess;
+    op->main.type = OpParameter_ImageProcessParam;
+    auto process = new ImageProcessParamT;
+    op->main.value = process;
+    process->destFormat = (MNN::ImageFormatType)config.destFormat;
+    process->sourceFormat = (MNN::ImageFormatType)config.sourceFormat;
+    process->filterType = (MNN::FilterType)config.filterType;
+    process->wrap = (MNN::WrapType)config.wrap;
+    process->shape = {1, oc, oh, ow};
+    process->outputType = (DataType)dtype;
+    process->paddingValue = padVal;
+    process->mean.resize(4);
+    process->normal.resize(4);
+    process->transform.resize(9);
+    for (int i = 0; i < 4; i++) {
+        process->mean[i] = config.mean[i];
+        process->normal[i] = config.normal[i];
+    }
+    for (int i = 0; i < 9; i++) {
+        process->transform[i] = matrix.get(i);
+    }
+    return (Variable::create(Expr::create(std::move(op), {input})));
+}
+
+VARP _Where(VARP x) {
+    std::unique_ptr<MNN::OpT> op(new MNN::OpT);
+    op->type = MNN::OpType_Where;
+    op->main.type = OpParameter_Extra;
+    op->main.value = new ExtraT;
+    return (Variable::create(Expr::create(std::move(op), {x})));
 }
 
 } // namespace Express
