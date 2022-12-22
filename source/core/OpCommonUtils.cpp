@@ -102,7 +102,7 @@ static std::tuple<int, int, int> _computeStride(const std::tuple<int, int, int>&
     return std::make_tuple(inside, axis, outside);
 }
 bool OpCommonUtils::canBlitFast(const Tensor::InsideDescribe::Region& region, const SPLITS& srcSplits,
-                                const SPLITS& dstSplits, int pack, bool swapnc) {
+                                const SPLITS& dstSplits, int pack, bool swapnc, bool swapcw) {
     int srcCOffset = (region.src.offset / std::get<0>(srcSplits)) % std::get<1>(srcSplits);
     if (srcCOffset % pack != 0) {
         return false;
@@ -129,6 +129,11 @@ bool OpCommonUtils::canBlitFast(const Tensor::InsideDescribe::Region& region, co
                 if (std::get<1>(srcFused)) {
                     return false;
                 }
+            } else if (swapcw) {
+                // nc can't be fused
+                if (std::get<0>(srcFused)) {
+                    return false;
+                }
             } else {
                 // nw can't be fused
                 if (std::get<2>(srcFused)) {
@@ -141,6 +146,11 @@ bool OpCommonUtils::canBlitFast(const Tensor::InsideDescribe::Region& region, co
             if (swapnc) {
                 // cw can't be fused, because layout is c, n, w
                 if (std::get<1>(dstFused)) {
+                    return false;
+                }
+            } else if (swapcw) {
+                // nc can't be fused
+                if (std::get<0>(dstFused)) {
                     return false;
                 }
             } else {
@@ -249,7 +259,7 @@ void OpCommonUtils::turnToPackRegion(const Tensor::InsideDescribe::Region& regio
 //               c4Region.dst.stride[0], c4Region.dst .stride[1], c4Region.dst.stride[2]);
 }
 
-bool OpCommonUtils::canBlitFast(const Tensor::InsideDescribe::Region& region, const Tensor* dest, int pack, bool swapnc) {
+bool OpCommonUtils::canBlitFast(const Tensor::InsideDescribe::Region& region, const Tensor* dest, int pack, bool swapnc, bool swapcw) {
     auto src    = region.origin;
     int srcArea = 1;
     // FIXME: Support dimensions = 1
@@ -280,7 +290,7 @@ bool OpCommonUtils::canBlitFast(const Tensor::InsideDescribe::Region& region, co
         dstChannel = dest->length(1);
     }
     return canBlitFast(region, std::make_tuple(srcArea, inputChannel, inputBatch),
-                       std::make_tuple(dstArea, dstChannel, dstBatch), pack, swapnc);
+                       std::make_tuple(dstArea, dstChannel, dstBatch), pack, swapnc, swapcw);
 }
 
 void OpCommonUtils::turnToPackRegion(const Tensor::InsideDescribe::Region& region,
@@ -360,6 +370,9 @@ std::vector<std::tuple<int, int, int>> OpCommonUtils::computeReduceDims(const st
     for (int i = 0; i < axises.size(); ++i) {
         if (axises[i] < 0) {
             axises[i] = inputs[0]->dimensions() + axises[i];
+            if (axises[i] < 0) {
+                return {std::make_tuple(1, totalSize, 1)};
+            }
         }
     }
     // Cache for input's dims
@@ -487,6 +500,8 @@ bool OpCommonUtils::opCompabilityForLowp(const Op* op) {
         case OpType_ReLU6:
         case OpType_PReLU:
         case OpType_GridSample:
+        case OpType_ROIPooling:
+        case OpType_ROIAlign:
             return true;
         default:
             break;

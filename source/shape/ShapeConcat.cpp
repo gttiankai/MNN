@@ -22,26 +22,22 @@ class ConcatSizeComputer : public SizeComputer {
         } else if (op->type() == OpType_QuantizedConcat) {
             basicAxis = op->main_as_QuantizedConcat()->axis();
         }
-        bool valid = false;
         int axis = basicAxis;
         // Concat-inputs may have scalar which should be delete
         for (const auto& input : inputs) {
             auto inputDimensions = input->buffer().dimensions;
-            if (input->size() <= 0) {
-                continue;
-            }
+
+            //  Tensor might be zeros size, but some dims may not be zero. should concat as usual.
+
             ::memcpy(ob.dim, input->buffer().dim, sizeof(halide_dimension_t) * inputDimensions);
             ob.dimensions = inputDimensions;
             ob.type       = input->buffer().type;
             if (axis < 0) {
                 axis = inputDimensions + axis;
             }
-            valid = true;
             break;
         }
-        if (!valid) {
-            return false;
-        }
+
 
         int sum = 0;
         for (auto t : inputs) {

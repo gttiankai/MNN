@@ -27,11 +27,37 @@ public:
         // onnx scores is 3D [num_batches, num_classes, boxes_num] with num_batches = 1,
         // while tf scores is 1D [boxes_num].
         auto inputs = expr->inputs();
-        // 3th input is max_output_boxes_per_class(default is 0), making output shape is (0, 3) which MNN isn't support
-        MNN_ASSERT(inputs.size() >= 3);
+        // optional input 3/4/5th
+        if (inputs.size() < 3 || inputs[2].get() == nullptr) {
+            MNN_ERROR("NonMaxSuppression's max_output_boxes_per_class must be provided (can't optional)\n");
+            return nullptr;
+        }
+        auto zero = _Scalar<float>(0);
+        for (int i = 3; i < inputs.size(); ++i) {
+            if (inputs[i].get() == nullptr) {
+                inputs[i] = zero;
+            }
+        }
+        
         auto input0Info = inputs[0]->getInfo();
         auto input1Info = inputs[1]->getInfo();
-        if (nullptr == input0Info || nullptr == input1Info) {
+        bool oldSupport = (input0Info != nullptr && input1Info != nullptr);
+        if (oldSupport) {
+            for (auto dim : input0Info->dim) {
+                if (dim <= 0) {
+                    oldSupport = false;
+                    break;
+                }
+            }
+            for (auto dim : input1Info->dim) {
+                if (dim <= 0) {
+                    oldSupport = false;
+                    break;
+                }
+            }
+        }
+        
+        if (!oldSupport) {
             MNN_ERROR("Shape of NonMaxSupression's input is unknown. Please confirm version of MNN engine is new enough and use V3 Module API to run it correctly\n");
             std::unique_ptr<OpT> nms(new OpT);
             nms->type                = OpType_NonMaxSuppressionV2;

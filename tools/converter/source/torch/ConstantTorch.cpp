@@ -54,6 +54,7 @@ void ConstantTorch::run(MNN::OpT* dstOp, const torch::jit::Node* node, TorchScop
             param->dataType = MNN::DataType_DT_INT32;
             const auto int64s = getValue<std::vector<int64_t>>(output);
             param->int32s.resize(int64s.size());
+            param->dims.push_back(int64s.size());
             for (int i = 0; i < int64s.size(); i++) {
                 param->int32s[i] = int64s[i];
             }
@@ -98,6 +99,13 @@ void ConstantTorch::run(MNN::OpT* dstOp, const torch::jit::Node* node, TorchScop
                     break;
                 }
                 case at::ScalarType::Bool:
+                    param->dataType = MNN::DataType_DT_INT32;
+                    param->int32s = std::move(getValue<int32_t>(output, param->dims));
+                    if (param->dims.empty() && param->int32s.empty()) {
+                        param->int32s.push_back(0);
+                        param->dims.push_back(1);
+                    }
+                    break;
                 case at::ScalarType::BFloat16:
                 case at::ScalarType::Short:
                 case at::ScalarType::Half:

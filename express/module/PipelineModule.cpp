@@ -385,7 +385,7 @@ static std::vector<SubModuleInfo> _createSubModuleInfo(const MNN::Net* net, cons
     std::vector<SubModuleInfo> submodule;
     auto selectOps = _collectNeededOps(net, inputIndexes, outputIndexes);
 
-    // Seperate the graph to serveral submodule
+    // Separate the graph to serveral submodule
     SubModuleInfo current;
     for (int si=0; si<selectOps.size(); ++si) {
         auto i = selectOps[si];
@@ -547,13 +547,13 @@ static Module* _createSubModule(const MNN::Net* net, const SubModuleInfo& info, 
     if (1 == info.opList.size()) {
         auto op = net->oplists()->GetAs<Op>(info.opList[0]);
         if (OpType_If == op->type()) {
-            return IfModule::create(op, subs);
+            return IfModule::create(op, subs, sharedConst);
         }
         if (OpType_While == op->type()) {
-            return WhileModule::create(op, subs);
+            return WhileModule::create(op, subs, sharedConst);
         }
         if (OpType_NonMaxSuppressionV2 == op->type()) {
-            return NMSModule::create(op);
+            return NMSModule::create(op, sharedConst);
         }
         // MNN_ASSERT(false);
     }

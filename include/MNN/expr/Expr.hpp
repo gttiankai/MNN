@@ -6,8 +6,8 @@
 //  Copyright © 2018, Alibaba Group Holding Limited
 //
 
-#ifndef Expr_hpp
-#define Expr_hpp
+#ifndef MNN_Expr_hpp
+#define MNN_Expr_hpp
 
 #include <functional>
 #include <string>
@@ -145,8 +145,9 @@ public:
     static std::vector<VARP> mapToSequence(const std::map<std::string, VARP>& source);
     static std::vector<EXPRP> getExecuteOrder(const std::vector<VARP>& output);
     static void save(const std::vector<VARP>& vars, const char* fileName);
+    static std::vector<int8_t> save(const std::vector<VARP>& vars);
     static void save(const std::vector<VARP>& vars, NetT* dest);
-    
+
     // Pack a few Variable to compute in one pipeline
     static void prepareCompute(const std::vector<VARP>& vars, bool forceCPU = false);
     static void compute(const std::vector<VARP>& vars, bool forceCPU = false);
@@ -157,6 +158,7 @@ public:
         mFrom = expr;
         mFromIndex = index;
     }
+
 private:
     Variable(EXPRP expr, int index) {
         mFrom      = expr;

@@ -6,8 +6,8 @@
 //  Copyright © 2018, Alibaba Group Holding Limited
 //
 
-#ifndef AutoTime_hpp
-#define AutoTime_hpp
+#ifndef MNN_AutoTime_hpp
+#define MNN_AutoTime_hpp
 
 #include <stdint.h>
 #include <stdio.h>
@@ -29,6 +29,10 @@ public:
     // get duration (us) from init or latest reset.
     uint64_t durationInUs();
     
+    // Get Current Time
+    uint64_t current() const {
+        return mLastResetTime;
+    }
 protected:
     uint64_t mLastResetTime;
 };

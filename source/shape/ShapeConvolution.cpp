@@ -54,16 +54,18 @@ public:
             inputCount == layer->group() &&
             inputCount == input->channel();
         int commonChannelMatch =
-            inputCount == inputs[0]->channel() ||            // real relationship in in express
+            inputCount == inputs[0]->channel() ||            // real relationship in express
             (inputCount * layer->group() == input->channel()); // standard definition of group convolution
         bool valid = inputCount == 0 || depthwiseMatch || commonChannelMatch;
 
         // For Tensorflow Group Convolution, the inputCount is the size of filter's input count
         if (inputs.size() == 1 && !valid && OpType_Convolution == op->type()) {
+            input->printShape();
             MNN_ERROR(
-                "Error for compute convolution shape, inputCount:%d, group:%d, inputChannel: %d, batch:%d, width:%d, height:%d. "
+                "Error for compute convolution shape, inputCount:%d, outputCount:%d, KH:%d, KW:%d, group:%d\ninputChannel: %d, batch:%d, width:%d, height:%d. "
                 "Input data channel may be mismatch with filter channel count\n",
-                layer->inputCount(), layer->group(), input->channel(), input->batch(), input->width(), input->height());
+                layer->inputCount(), outputCount, kY, kX, layer->group(),
+                input->channel(), input->batch(), input->width(), input->height());
             return false;
         }
 
@@ -189,6 +191,45 @@ public:
     }
 };
 
+class Col2ImSizeComputer : public ConvolutionSizeComputer {
+public:
+    virtual bool onComputeSize(const MNN::Op* op, const std::vector<Tensor*>& inputs,
+                               const std::vector<Tensor*>& outputs) const override {
+        MNN_ASSERT(2 == inputs.size() && 1 == outputs.size());
+        const Convolution2DCommon* layer = loadCommon(op);
+        auto kh    = layer->kernelY();
+        auto kw    = layer->kernelX();
+        auto input = inputs[0];
+        auto output = outputs[0];
+        auto outputShape = inputs[1];
+        auto oDim = outputShape->host<int32_t>();
+        int oh = 1, ow = 1;
+        if (outputShape->elementSize() == 2) {
+            oh = oDim[0];
+            ow = oDim[1];
+        } else {
+            MNN_ASSERT(false);
+        }
+        auto iDim = input->shape();
+        int batch = 1;
+        int colSize = iDim[0];
+        if (iDim.size() == 3) {
+            batch = iDim[0];
+            colSize = iDim[1];
+        } else if (iDim.size() == 2) {
+            colSize = iDim[0];
+        } else {
+            MNN_ASSERT(false);
+        }
+        output->buffer().dimensions = 4;
+        output->setLength(0, batch);
+        output->setLength(1, colSize / (kh * kw));
+        output->setLength(2, oh);
+        output->setLength(3, ow);
+        return true;
+    }
+};
+
 REGISTER_SHAPE(ConvolutionSizeComputer, OpType_Convolution);
 REGISTER_SHAPE(ConvolutionSizeComputer, OpType_ConvolutionDepthwise);
 REGISTER_SHAPE(ConvolutionSizeComputer, OpType_TfQuantizedConv2D);
@@ -198,4 +239,5 @@ REGISTER_SHAPE(ConvolutionSizeComputer, OpType_DepthwiseConvInt8);
 REGISTER_SHAPE(Dilation2DSizeComputer, OpType_Dilation2D);
 REGISTER_SHAPE(Conv2DBackpropFilterSizeComputer, OpType_Conv2DBackPropFilter);
 REGISTER_SHAPE(Im2ColSizeComputer, OpType_Im2Col);
+REGISTER_SHAPE_INPUTS(Col2ImSizeComputer, OpType_Col2Im, {1});
 } // namespace MNN

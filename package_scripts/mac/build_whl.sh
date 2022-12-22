@@ -19,25 +19,28 @@ while getopts "o:p:v:b" opt; do
   esac
 done
 
+export MACOSX_DEPLOYMENT_TARGET=10.11
+
 ./schema/generate.sh
 rm -rf $path && mkdir -p $path
 PACKAGE_PATH=$(realpath $path)
 
-CMAKE_ARGS="-DMNN_BUILD_CONVERTER=ON -DMNN_BUILD_TRAIN=ON -DCMAKE_BUILD_TYPE=Release -DMNN_BUILD_SHARED_LIBS=OFF -DMNN_AAPL_FMWK=OFF -DMNN_SEP_BUILD=OFF -DMNN_EXPR_SHAPE_EAGER=ON -DMNN_TRAIN_DEBUG=ON"
+CMAKE_ARGS="-DMNN_BUILD_CONVERTER=ON -DMNN_BUILD_TRAIN=ON -DCMAKE_BUILD_TYPE=Release -DMNN_BUILD_SHARED_LIBS=OFF -DMNN_AAPL_FMWK=OFF -DMNN_SEP_BUILD=OFF -DMNN_EXPR_SHAPE_EAGER=ON -DMNN_TRAIN_DEBUG=ON -DMNN_BUILD_OPENCV=ON -DMNN_IMGCODECS=ON -DMNN_BUILD_TORCH=ON"
 if [ ! -z $opencl ]; then
     CMAKE_ARGS="$CMAKE_ARGS -DMNN_OPENCL=ON"
 fi
 
 rm -rf pymnn_build && mkdir pymnn_build
 pushd pymnn_build
-cmake $CMAKE_ARGS .. && make MNN MNNTrain MNNConvert -j8
+cmake $CMAKE_ARGS .. && make MNN MNNTrain MNNConvert MNNOpenCV -j8
 popd
 
 pushd pymnn/pip_package
-echo -e "__version__ = '$mnn_version'" > MNN/version.py
 rm -rf build && mkdir build
 rm -rf dist && mkdir dist
-if [ -z $python_versions ]; then
+# source your conda.sh
+# source ~/miniconda/etc/profile.d/conda.sh
+if [ -z "$python_versions" ]; then
   python build_wheel.py --version $mnn_version
 else
   for env in $python_versions; do
@@ -47,5 +50,4 @@ else
   done
 fi
 cp dist/* $PACKAGE_PATH
-rm MNN/version.py
 popd

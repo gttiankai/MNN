@@ -33,6 +33,20 @@ inline T stringConvert(const char* number) {
 
 using namespace MNN;
 
+static void _zeroInputs(const Interpreter* net, const Session* session) {
+    // Set Other Inputs to Zero
+    auto allInput = net->getSessionInputAll(session);
+    for (auto& iter : allInput) {
+        auto inputTensor = iter.second;
+        auto size = inputTensor->size();
+        if (size <= 0) {
+            continue;
+        }
+        MNN::Tensor tempTensor(inputTensor, inputTensor->getDimensionType());
+        ::memset(tempTensor.host<void>(), 0, tempTensor.size());
+        inputTensor->copyFromHostTensor(&tempTensor);
+    }
+}
 static void compareForwadType(Interpreter* net, MNNForwardType expectType, MNNForwardType compareType, float tolerance,
                               const std::map<std::string, std::shared_ptr<Tensor>>& inputs, const std::string& stopOp, BackendConfig::PrecisionMode precision, int modeNum) {
     std::vector<std::shared_ptr<MNN::Tensor>> correctResult;
@@ -46,7 +60,8 @@ static void compareForwadType(Interpreter* net, MNNForwardType expectType, MNNFo
     compareConfig.mode = modeNum;
     auto expectSession  = net->createSession(expectConfig);
     auto compareSession = net->createSession(compareConfig);
-
+    _zeroInputs(net, expectSession);
+    _zeroInputs(net, compareSession);
     bool allCorrect = true;
 
     MNN::TensorCallBackWithInfo beginCallBack = [&](const std::vector<MNN::Tensor*>& t, const OperatorInfo* op) {
@@ -70,7 +85,9 @@ static void compareForwadType(Interpreter* net, MNNForwardType expectType, MNNFo
             if (tensor->buffer().device == 0 && tensor->buffer().host == nullptr) {
                 return true;
             }
-            std::shared_ptr<MNN::Tensor> copyTensor(MNN::Tensor::createHostTensorFromDevice(tensor, true));
+
+            std::shared_ptr<MNN::Tensor> copyTensor(new MNN::Tensor(tensor, tensor->getDimensionType()));
+            tensor->copyToHostTensor(copyTensor.get());
             correctResult.emplace_back(copyTensor);
         }
         return true;
@@ -90,7 +107,10 @@ static void compareForwadType(Interpreter* net, MNNForwardType expectType, MNNFo
             if (tensor->buffer().device == 0 && tensor->buffer().host == nullptr) {
                 return true;
             }
-            std::shared_ptr<MNN::Tensor> copyTensor(MNN::Tensor::createHostTensorFromDevice(tensor, true));
+            
+            tensor->wait(MNN::Tensor::MAP_TENSOR_READ, false);
+            std::shared_ptr<MNN::Tensor> copyTensor(new MNN::Tensor(tensor, tensor->getDimensionType()));
+            tensor->copyToHostTensor(copyTensor.get());
             auto expectTensor = correctResult[index++];
             auto correct      = TensorUtils::compareTensors(copyTensor.get(), expectTensor.get(), tolerance, true);
             if (!correct) {
@@ -116,6 +136,7 @@ static void compareForwadType(Interpreter* net, MNNForwardType expectType, MNNFo
     } else {
         return;
     }
+    _zeroInputs(net, compareSession);
     index = 0;
     for (auto& iter : inputs) {
         Tensor* compareInput = net->getSessionInput(compareSession, iter.first.empty() ? NULL : iter.first.c_str());
@@ -258,6 +279,7 @@ int main(int argc, const char* argv[]) {
         stopOp = argv[6];
     }
     FUNC_PRINT_ALL(stopOp.c_str(), s);
+    net->releaseSession(session);
     compareForwadType(net.get(), MNN_FORWARD_CPU, type, tolerance, inputs, stopOp, precision, modeNum);
 
     return 0;

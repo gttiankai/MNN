@@ -25,7 +25,7 @@ public:
     virtual ~ VulkanAllocator() {
         // Do nothing
     }
-    virtual std::pair<void*, int> onAlloc(int size, int align) override {
+    virtual std::pair<void*, size_t> onAlloc(size_t size, size_t align) override {
         VkMemoryAllocateInfo info;
         info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         info.pNext = nullptr;
@@ -34,7 +34,7 @@ public:
         auto mem = new VulkanMemory(mDevice, info);
         return std::make_pair(mem, 0);
     }
-    virtual void onRelease(std::pair<void*, int> ptr) override {
+    virtual void onRelease(std::pair<void*, size_t> ptr) override {
         auto p = (VulkanMemory*)ptr.first;
         delete p;
     }
@@ -75,7 +75,7 @@ void VulkanMemoryPool::returnBuffer(VkBuffer buffer, size_t size, VkBufferUsageF
 }
 
 std::pair<void*, int> VulkanMemoryPool::allocMemory(const VkMemoryRequirements& requirements, VkFlags extraMask,
-                                                  bool seperate) {
+                                                  bool separate) {
     uint32_t index = 0;
     auto typeBits  = requirements.memoryTypeBits;
     for (uint32_t i = 0; i < mDevice.memProty().memoryTypeCount; i++) {
@@ -90,7 +90,7 @@ std::pair<void*, int> VulkanMemoryPool::allocMemory(const VkMemoryRequirements& 
     }
     MNN_ASSERT(index >= 0);
     MNN_ASSERT(index < mAllocators.size());
-    auto mem = mAllocators[index]->alloc(requirements.size, seperate, requirements.alignment);
+    auto mem = mAllocators[index]->alloc(requirements.size, separate, requirements.alignment);
     MNN_ASSERT(mem.second % requirements.alignment ==0);
     return mem;
 }

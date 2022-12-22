@@ -45,8 +45,8 @@ static PoolPadType _convertPoollingPadMode(PaddingMode mode) {
 /*create a input variable.
 Args:
 shape: A vector, the shape of the variable.
-data_format: A enum, NCHW/NHWC/NC4HW4 is allowed. 
-dtype: The type of the elements of the resulting variable. 
+data_format: A enum, NCHW/NHWC/NC4HW4 is allowed.
+dtype: The type of the elements of the resulting variable.
 Returns:
 output: A variable.
 */
@@ -66,9 +66,9 @@ VARP _Scalar(const void* ptr, halide_type_t type) {
 }
 /*create a constant variable.
 Args:
-ptr: A pointer. Indicates the values. 
+ptr: A pointer. Indicates the values.
 shape: A vector, the shape of the variable.
-format: A enum, NCHW/NHWC/NC4HW4 is allowed. 
+format: A enum, NCHW/NHWC/NC4HW4 is allowed.
 type: The type of the elements of the resulting variable. 
 Returns:
 output: A constant variable.
@@ -581,6 +581,22 @@ VARP _StridedSlice(VARP input, VARP begin, VARP end, VARP strided, int32_t begin
     op->main.AsStridedSliceParam()->shrinkAxisMask = shrinkAxisMask;
     return (Variable::create(Expr::create(op.get(), {input, begin, end, strided})));
 }
+
+VARP _StridedSliceWrite(VARP input, VARP begin, VARP end, VARP strided, VARP write, int32_t beginMask,
+                        int32_t endMask, int32_t ellipsisMask, int32_t newAxisMask, int32_t shrinkAxisMask) {
+    std::unique_ptr<OpT> op(new OpT);
+    op->type                        = OpType_StridedSlice;
+    op->main.type                   = OpParameter_StridedSliceParam;
+    op->main.value                  = new StridedSliceParamT;
+
+    op->main.AsStridedSliceParam()->T = DataType_DT_FLOAT;
+    op->main.AsStridedSliceParam()->beginMask      = beginMask;
+    op->main.AsStridedSliceParam()->endMask        = endMask;
+    op->main.AsStridedSliceParam()->ellipsisMask   = ellipsisMask;
+    op->main.AsStridedSliceParam()->newAxisMask    = newAxisMask;
+    op->main.AsStridedSliceParam()->shrinkAxisMask = shrinkAxisMask;
+    return (Variable::create(Expr::create(op.get(), {input, begin, end, strided, write})));
+}
 /*Transposes x.
 Args:
 x: A variable.
@@ -1023,6 +1039,18 @@ VARP _GatherND(VARP params, VARP indices) {
     std::unique_ptr<OpT> op(new OpT);
     op->type       = OpType_GatherND;
     return (Variable::create(Expr::create(std::move(op), {params, indices})));
+}
+
+VARP _GatherElements(VARP params, VARP indices) {
+    std::unique_ptr<OpT> op(new OpT);
+    op->type       = OpType_GatherElements;
+    return (Variable::create(Expr::create(std::move(op), {params, indices})));
+}
+
+VARP _GatherElements(VARP params, VARP indices, VARP axis) {
+    std::unique_ptr<OpT> op(new OpT);
+    op->type       = OpType_GatherElements;
+    return (Variable::create(Expr::create(std::move(op), {params, indices, axis})));
 }
 
 /*BatchToSpace for N-D variables
@@ -1828,6 +1856,96 @@ VARP _Where(VARP x) {
     op->main.type = OpParameter_Extra;
     op->main.value = new ExtraT;
     return (Variable::create(Expr::create(std::move(op), {x})));
+}
+
+VARP _Sort(VARP x, int axis, bool arg, bool descend) {
+    std::unique_ptr<OpT> op(new OpT);
+    op->type = OpType_TopKV2;
+    op->main.type = OpParameter_TopKV2;
+    auto topk = new TopKV2T;
+    topk->largest = descend;
+    op->main.value = topk;
+    auto shape = x->getInfo()->dim;
+    axis = axis < 0 ? shape.size() + axis : axis;
+    int k = x->getInfo()->dim[axis];
+    std::vector<VARP> inputs {x, _Scalar(k)};
+    if (axis + 1 != shape.size()) {
+        inputs.push_back(_Scalar(axis));
+    }
+    auto expr = Expr::create(op.get(), inputs, 2);
+    return Variable::create(expr, arg);
+}
+
+VARP _Raster(const std::vector<VARP>& vars, const std::vector<int>& region, const std::vector<int>& shape) {
+    std::unique_ptr<MNN::OpT> op(new MNN::OpT);
+    op->type = OpType_Raster;
+    auto extra = new ExtraT;
+    // set shape
+    std::unique_ptr<AttributeT> shapeAttr(new AttributeT);
+    shapeAttr->key = "shape";
+    shapeAttr->list.reset(new ListValueT);
+    shapeAttr->list->i = shape;
+    extra->attr.push_back(std::move(shapeAttr));
+    // set region
+    std::unique_ptr<AttributeT> regionAttr(new AttributeT);
+    regionAttr->key = "region";
+    regionAttr->list.reset(new ListValueT);
+    regionAttr->list->i = region;
+    extra->attr.push_back(std::move(regionAttr));
+    op->main.type = OpParameter_Extra;
+    op->main.value = extra;
+    return (Variable::create(Expr::create(std::move(op), vars)));
+}
+
+VARP _Nms(VARP boxes, VARP scores, int maxDetections, float iouThreshold, float scoreThreshold) {
+    std::unique_ptr<MNN::OpT> op(new MNN::OpT);
+    op->type = OpType_NonMaxSuppressionV2;
+    std::vector<VARP> vars {boxes, scores, _Scalar(maxDetections)};
+    if (iouThreshold >= 0) {
+        vars.push_back(_Scalar(iouThreshold));
+    }
+    if (scoreThreshold >= 0) {
+        vars.push_back(_Scalar(scoreThreshold));
+    }
+    return (Variable::create(Expr::create(std::move(op), vars)));
+}
+
+VARP _Im2Col(VARP x, INTS kernelSize, INTS dilate, INTS pads, INTS stride) {
+    std::unique_ptr<MNN::OpT> op(new MNN::OpT);
+    op->type = MNN::OpType_Im2Col;
+    op->main.type  = OpParameter_Convolution2D;
+    auto param = new MNN::Convolution2DT;
+    auto common    = new Convolution2DCommonT;
+    param->common.reset(common);
+    op->main.value = param;
+    common->padX        = pads[0];
+    common->padY        = pads[1];
+    common->strideX     = stride[0];
+    common->strideY     = stride[1];
+    common->dilateX     = dilate[0];
+    common->dilateY     = dilate[1];
+    common->kernelX     = kernelSize[0];
+    common->kernelY     = kernelSize[1];
+    return (Variable::create(Expr::create(op.get(), {x})));
+}
+
+VARP _Col2Im(VARP x, VARP outputShape, INTS kernelSize, INTS dilate, INTS pads, INTS stride) {
+    std::unique_ptr<MNN::OpT> op(new MNN::OpT);
+    op->type = MNN::OpType_Col2Im;
+    op->main.type  = OpParameter_Convolution2D;
+    auto param = new MNN::Convolution2DT;
+    auto common    = new Convolution2DCommonT;
+    param->common.reset(common);
+    op->main.value = param;
+    common->padX        = pads[0];
+    common->padY        = pads[1];
+    common->strideX     = stride[0];
+    common->strideY     = stride[1];
+    common->dilateX     = dilate[0];
+    common->dilateY     = dilate[1];
+    common->kernelX     = kernelSize[0];
+    common->kernelY     = kernelSize[1];
+    return (Variable::create(Expr::create(op.get(), {x, outputShape})));
 }
 
 } // namespace Express

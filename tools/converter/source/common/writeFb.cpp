@@ -36,9 +36,15 @@ int writeFb(std::unique_ptr<MNN::NetT>& netT, const std::string& MNNModelFile, c
     }
 
     addUUID(netT, proto);
+
+    // add version info to model
     netT->extraInfo.reset(new ExtraInfoT);
-    netT->extraInfo->name = config.authCode;
-    
+    netT->extraInfo->version = MNN_VERSION;
+    if (!config.authCode.empty()) {
+        // add auth code to model
+        netT->extraInfo->name = config.authCode;
+    }
+
     if (config.benchmarkModel) {
         removeParams(netT);
     }
@@ -46,9 +52,12 @@ int writeFb(std::unique_ptr<MNN::NetT>& netT, const std::string& MNNModelFile, c
     if (config.saveHalfFloat) {
         castParamsToHalf(netT);
     }
-
-    addSparseInfo(netT, proto);
-
+    if (config.alignDenormalizedValue) {
+        AlignDenormalizedValue(netT);
+    }
+    if (config.detectSparseSpeedUp) {
+        addSparseInfo(netT, proto);
+    }
     if (config.compressionParamsFile != "") {
         fullQuantAndCoding(netT, proto);
     }
@@ -114,7 +123,7 @@ int writeFb(std::unique_ptr<MNN::NetT>& netT, const std::string& MNNModelFile, c
         }
         std::cout << "]" << std::endl;
     }
-    
+
     flatbuffers::FlatBufferBuilder builderOutput(1024);
     builderOutput.ForceDefaults(true);
     auto len = MNN::Net::Pack(builderOutput, netT.get());
@@ -141,7 +150,7 @@ int writeFb(std::unique_ptr<MNN::NetT>& netT, const std::string& MNNModelFile, c
         output.write((const char*)bufferOutput, sizeOutput);
     }
     if (!netT->subgraphs.empty()) {
-        MNN_PRINT("The modle has subgraphs, please use MNN::Module to run it\n");
+        MNN_PRINT("The model has subgraphs, please use MNN::Module to run it\n");
     }
 
 #ifdef MNN_DUMP_SUBGRAPH

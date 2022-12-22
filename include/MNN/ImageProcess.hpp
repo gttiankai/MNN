@@ -6,8 +6,8 @@
 //  Copyright © 2018, Alibaba Group Holding Limited
 //
 
-#ifndef ImageProcess_hpp
-#define ImageProcess_hpp
+#ifndef MNN_ImageProcess_hpp
+#define MNN_ImageProcess_hpp
 
 #include <MNN/ErrorCode.hpp>
 #include <MNN/Matrix.h>
@@ -88,6 +88,7 @@ public:
                                 const int normalCount = 0, const Tensor* dstTensor = nullptr);
 
     ~ImageProcess();
+    static void destroy(ImageProcess* imageProcess);
 
     /**
      * @brief get affine transform matrix.
@@ -148,6 +149,26 @@ public:
     void setPadding(uint8_t value) {
         mPaddingValue = value;
     }
+
+    /**
+     * @brief set to draw mode.
+     * @param void
+     * @return void.
+     */
+    void setDraw();
+
+    /**
+     * @brief draw color to regions of img.
+     * @param img  the image to draw.
+     * @param w  the image's width.
+     * @param h  the image's height.
+     * @param c  the image's channel.
+     * @param regions  the regions to draw, size is [num * 3] contain num x { y, xl, xr }
+     * @param num  regions num
+     * @param color  the color to draw.
+     * @return void.
+     */
+    void draw(uint8_t* img, int w, int h, int c, const int* regions, int num, const uint8_t* color);
 private:
     ImageProcess(const Config& config);
     Matrix mTransform;

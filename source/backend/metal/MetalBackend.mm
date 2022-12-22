@@ -5,9 +5,8 @@
 //  Created by MNN on 2019/01/30.
 //  Copyright © 2018, Alibaba Group Holding Limited
 //
-#if MNN_METAL_ENABLED
-
 #import "backend/metal/MetalBackend.hpp"
+#if MNN_METAL_ENABLED
 #import <mutex>
 #import "backend/metal/MNNMetalContext.h"
 #import "core/Macro.h"
@@ -52,6 +51,8 @@ MetalBackend::MetalBackend(std::shared_ptr<BufferAllocator> staticMem, const Met
     mRuntime = runtime;
     mBufferPool.reset(new BufferAllocator(BufferAllocator::Allocator::createRecurse(staticMem.get()), 1024));
     mStaticBufferPool = staticMem;
+    mShapeH2D = getConstBuffer(4 * sizeof(int));
+    mShapeD2H = getConstBuffer(4 * sizeof(int));
 }
 MetalBackend::~MetalBackend() {
     // Do nothing
@@ -146,7 +147,7 @@ Execution *MetalBackend::onCreate(const std::vector<Tensor *> &inputs, const std
         return NULL;
     }
 
-    auto exe = iter->second->onCreate(inputs, op, this);
+    auto exe = iter->second->onCreate(inputs, op, this, outputs);
     if (NULL == exe) {
         mOpFullSupport = false;
         MNN_PRINT("The Creator Don't support type [%s], %s\n", MNN::EnumNameOpType(op->type()), op->name() ? op->name()->c_str() : "");
@@ -281,7 +282,7 @@ static NSString *kernelForConvert(halide_type_t type, MNN_DATA_FORMAT from, MNN_
                 // from MNN_DATA_FORMAT_NCHW
                 {nil, nil, @"upcast_f_NCHW_to_NC4HW4", nil, nil},
                 // from MNN_DATA_FORMAT_NHWC
-                {nil, nil, @"upcast_f_NHWC_to_NC4HW4", nil, nil},
+                {@"upcast_f_NHWC_to_NCHW", nil, @"upcast_f_NHWC_to_NC4HW4", nil, nil},
                 // from MNN_DATA_FORMAT_NC4HW4
                 {@"upcast_f_NC4HW4_to_NCHW", @"upcast_f_NC4HW4_to_NHWC", nil, nil, nil},
                 // from MNN_DATA_FORMAT_NHWC4
@@ -292,7 +293,7 @@ static NSString *kernelForConvert(halide_type_t type, MNN_DATA_FORMAT from, MNN_
             // down
             {
                 // from MNN_DATA_FORMAT_NCHW
-                {nil, nil, @"downcast_f_NCHW_to_NC4HW4", nil, nil},
+                {nil, @"downcast_f_NCHW_to_NHWC", @"downcast_f_NCHW_to_NC4HW4", nil, nil},
                 // from MNN_DATA_FORMAT_NHWC
                 {nil, nil, @"downcast_f_NHWC_to_NC4HW4", nil, nil},
                 // from MNN_DATA_FORMAT_NC4HW4
@@ -322,8 +323,6 @@ static NSString *kernelForConvert(halide_type_t type, MNN_DATA_FORMAT from, MNN_
 }
 
 void MetalBackend::onResizeBegin() {
-    mShapeH2D = getConstBuffer(4 * sizeof(int));
-    mShapeD2H = getConstBuffer(4 * sizeof(int));
     mOpFullSupport = true;
     mFrameEncodeCache = false;
     mOpEncoderSet = false;
@@ -554,6 +553,7 @@ int MetalBackend::onSync(Tensor::MapType mtype, bool toCpu, const Tensor* dstTen
     if (toCpu) {
         [ctx wait];
     }
+    mFrameEncodeCache = false;
     return 0;
 }
 
@@ -841,12 +841,12 @@ bool MetalRuntime::onSetCache(const void* buffer, size_t size) {//set Cache
     return setCache(std::make_pair(buffer, size));
 }
 
-std::pair<void*, int> MetalRuntimeAllocator::onAlloc(int size, int align) {
+std::pair<void*, size_t> MetalRuntimeAllocator::onAlloc(size_t size, size_t align) {
     auto buffer = [mDevice newBufferWithLength:size options:MTLCPUCacheModeDefaultCache];
     auto mMetalBufferAlloc = new MetalBufferAlloc(buffer);
     return std::make_pair((void *)mMetalBufferAlloc, 0);
 }
-void MetalRuntimeAllocator::onRelease(std::pair<void*, int> ptr) {
+void MetalRuntimeAllocator::onRelease(std::pair<void*, size_t> ptr) {
     delete (MetalBufferAlloc *)ptr.first;
 }
 
@@ -873,11 +873,15 @@ void registerMetalRuntimeCreator() {
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     if (nil != device) {
         registerMetalOps();
-        MNNInsertExtraRuntimeCreator(MNN_FORWARD_METAL, new MetalRuntimeCreator(device), false);
+        MNNInsertExtraRuntimeCreator(MNN_FORWARD_METAL, new MetalRuntimeCreator(device), true);
     } else {
         MNN_ERROR("Init Metal Error\n");
     }
 }
 } // namespace MNN
-
+#else
+namespace MNN {
+void registerMetalRuntimeCreator() {
+}
+};
 #endif

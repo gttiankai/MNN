@@ -27,9 +27,8 @@ static string swapComputeIn0In1(const string& computeOrigin) {
     return compute;
 }
 
-EltwiseExecution::EltwiseExecution(const std::vector<Tensor *> &inputs, const std::string &compute, const MNN::Op *op, Backend *backend,
-                                   float operatorData, bool broadCast)
-    : CommonExecution(backend), mCompute(compute), mBroadCast(broadCast), mOperatorData(operatorData) {
+EltwiseExecution::EltwiseExecution(const std::vector<Tensor *> &inputs, const std::string &compute, const MNN::Op *op, Backend *backend)
+    : CommonExecution(backend), mCompute(compute) {
     mBuildOptions.emplace("-DOPERATOR=" + compute);
     mOp = op;
 
@@ -56,6 +55,10 @@ ErrorCode EltwiseExecution::onResize(const std::vector<Tensor *> &inputs, const 
     auto runTime     = ((OpenCLBackend *)backend())->getOpenCLRuntime();
     int shape[4] = {outputShape[0], outputShape[1], outputShape[2], UP_DIV(outputShape[3], 4)};
     int fullCount[2] = {1, 1};
+    int activationType = 0;
+    if(mOp->type() == OpType_BinaryOp) {
+        activationType = mOp->main_as_BinaryOp()->activationType();
+    }
     
     auto &unit = mUnits[0];
     unit.kernel = runTime->buildKernel("binary", "binary", mBuildOptions);
@@ -76,6 +79,7 @@ ErrorCode EltwiseExecution::onResize(const std::vector<Tensor *> &inputs, const 
         unit.kernel.setArg(index++, openCLImage(output));
         unit.kernel.setArg(index++, shape);
         unit.kernel.setArg(index++, fullCount);
+        unit.kernel.setArg(index++, activationType);
 
         std::string name = "binary";
         mLocalWorkSize = localWS2DDefault(mGlobalWorkSize, mMaxWorkGroupSize, openCLBackend->getOpenCLRuntime(), name, unit.kernel).first;
@@ -127,6 +131,7 @@ ErrorCode EltwiseExecution::onResize(const std::vector<Tensor *> &inputs, const 
         unit.kernel.setArg(index++, openCLImage(output));
         unit.kernel.setArg(index++, shape);
         unit.kernel.setArg(index++, fullCount);
+        unit.kernel.setArg(index++, activationType);
 
         if(i == 0) {
             std::string name = "binary";
@@ -176,15 +181,15 @@ public:
                 case BinaryOpOperation_MAXIMUM:
                     return new EltwiseExecution(inputs, "in0>in1?in0:in1", op, backend);
                 case BinaryOpOperation_GREATER:
-                    return new EltwiseExecution(inputs, "convert_float4(isgreater(in0,in1))", op, backend);
+                    return new EltwiseExecution(inputs, "convert_float4(-isgreater(in0,in1))", op, backend);
                 case BinaryOpOperation_LESS:
-                    return new EltwiseExecution(inputs, "convert_float4(isless(in0,in1))", op, backend);
+                    return new EltwiseExecution(inputs, "convert_float4(-isless(in0,in1))", op, backend);
                 case BinaryOpOperation_LESS_EQUAL:
-                    return new EltwiseExecution(inputs, "convert_float4(islessequal(in0,in1))", op, backend);
+                    return new EltwiseExecution(inputs, "convert_float4(-islessequal(in0,in1))", op, backend);
                 case BinaryOpOperation_GREATER_EQUAL:
-                    return new EltwiseExecution(inputs, "convert_float4(isgreaterequal(in0,in1))", op, backend);
+                    return new EltwiseExecution(inputs, "convert_float4(-isgreaterequal(in0,in1))", op, backend);
                 case BinaryOpOperation_EQUAL:
-                    return new EltwiseExecution(inputs, "convert_float4(isequal(in0,in1))", op, backend);
+                    return new EltwiseExecution(inputs, "convert_float4(-isequal(in0,in1))", op, backend);
                 case BinaryOpOperation_FLOORDIV:
                     return new EltwiseExecution(inputs, "floor(sign(in1)*in0/(fabs(in1)>(FLOAT4)((FLOAT)0.0000001)?fabs(in1):(FLOAT4)((FLOAT)0.0000001)))", op, backend);
                 case BinaryOpOperation_FLOORMOD:
@@ -196,7 +201,7 @@ public:
                 case BinaryOpOperation_ATAN2:
                     return new EltwiseExecution(inputs, "atan(sign(in1)*in0/(fabs(in1)>(FLOAT4)((FLOAT)0.0000001)?fabs(in1):(FLOAT4)((FLOAT)0.0000001)))", op, backend);
                 case BinaryOpOperation_NOTEQUAL:
-                    return new EltwiseExecution(inputs, "convert_float4(isnotequal(in0,in1))", op, backend);
+                    return new EltwiseExecution(inputs, "convert_float4(-isnotequal(in0,in1))", op, backend);
                 case BinaryOpOperation_MOD:
                     return new EltwiseExecution(inputs, "in0-sign(in1)*in0/(fabs(in1)>(FLOAT4)((FLOAT)0.0000001)?fabs(in1):(FLOAT4)((FLOAT)0.0000001))", op, backend);
                 default:

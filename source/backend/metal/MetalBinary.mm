@@ -14,13 +14,14 @@
 #if MNN_METAL_ENABLED
 namespace MNN {
 
-MetalBinary::MetalBinary(Backend *backend, std::string type) : Execution(backend) {
+MetalBinary::MetalBinary(Backend *backend, std::string type, const MNN::Op *op) : Execution(backend) {
     auto mKernelName = "binary_" + type + "_x1";
     auto mtbn = static_cast<MetalBackend *>(backend);
     auto context = (__bridge MNNMetalContext *)mtbn->context();
     mConstBuffer             = [context newDeviceBuffer:4 * sizeof(int) access:CPUWriteOnly];
     auto kn = [NSString stringWithCString:mKernelName.c_str() encoding:[NSString defaultCStringEncoding]];
     mPipeline = [context pipelineWithName:kn];
+    mActivationType = op->main_as_BinaryOp()->activationType();
 }
 ErrorCode MetalBinary::onResize(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) {
     auto backend = static_cast<MetalBackend *>(this->backend());
@@ -33,7 +34,7 @@ ErrorCode MetalBinary::onResize(const std::vector<Tensor *> &inputs, const std::
     ((int *)mConstBuffer.contents)[0] = input0_data_count == 1 ? 0 : 1;
     ((int *)mConstBuffer.contents)[1] = input1_data_count == 1 ? 0 : 1;
     ((int *)mConstBuffer.contents)[2] = outdatacount;
-    ((int *)mConstBuffer.contents)[3] = 0;
+    ((int *)mConstBuffer.contents)[3] = mActivationType;
     mThreads = [context computeBestGroupAndLocal:mPipeline threads:MTLSizeMake(outdatacount, 1, 1)];
     return NO_ERROR;
 }
@@ -84,14 +85,17 @@ static std::string _convert(int originOp) {
 
 class MetalBinaryCreator : public MetalBackend::Creator {
 public:
-    virtual Execution *onCreate(const std::vector<Tensor *> &inputs, const MNN::Op *op, Backend *backend) const {
+    virtual Execution *onCreate(const std::vector<Tensor *> &inputs, const MNN::Op *op, Backend *backend, const std::vector<Tensor *>& outputs) const {
         auto binaryop = op->main_as_BinaryOp();
         auto type = _convert(binaryop->opType());
+        if (inputs[0]->getType().code != halide_type_float) {
+            return nullptr;
+        }
         if (type.empty()) {
             FUNC_PRINT(binaryop->opType());
             return nullptr;
         }
-        return new MetalBinary(backend, type);
+        return new MetalBinary(backend, type, op);
     }
 };
 REGISTER_METAL_OP_CREATOR(MetalBinaryCreator, OpType_BinaryOp);

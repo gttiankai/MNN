@@ -1543,6 +1543,24 @@ void MNNGridSampleComputeCord(float* dst, const float* src, size_t inH, size_t i
         }
     }
 }
+void MNNGridSampleComputeCord3D(float* dst, const float* src, size_t inD, size_t inH, size_t inW, size_t outD, size_t outH, size_t outW, size_t strideD, size_t strideH, bool alignCorners) {
+    float a = alignCorners ? 1.0f : 0.0f;
+    float b = alignCorners ? 0.0f : 1.0f;
+    for (auto d = 0; d < outD; ++d) {
+        for (auto h = 0; h < outH; ++h) {
+            auto __gridPtr = src + d * strideD + h * strideH;
+            auto cordH = dst + (d * outH + h) * outW * 3;
+            for (auto w = 0; w < outW; ++w) {
+                auto x = __gridPtr[3 * w + 0];
+                auto y = __gridPtr[3 * w + 1];
+                auto z = __gridPtr[3 * w + 2];
+                cordH[3 * w + 0] = ((1 + x) * (inW - a) - b) * 0.5f;
+                cordH[3 * w + 1] = ((1 + y) * (inH - a) - b) * 0.5f;
+                cordH[3 * w + 2] = ((1 + z) * (inD - a) - b) * 0.5f;
+            }
+        }
+    }
+}
 
 #ifndef MNN_USE_SSE
 void MNNNorm(float *dst, const float *src, const float *gamma, const float *beta, float epsilon, size_t size) {
@@ -1583,6 +1601,22 @@ size_t MNNGridSampleComputeOffset(int h, int w, int height, int width, bool padM
         w = w < 0 ? 0 : ( w > (width - 1) ? (width - 1) : w);
     }
     return h * width * 4 + w * 4;
+}
+
+size_t MNNGridSampleComputeOffset3D(int d, int h, int w, int depth, int height, int width, bool padMode) {
+    if (padMode == true) { //padMode == BorderMode_ZEROS
+        if (h < 0 || h >= height || w < 0 || w >= width || d < 0 || d >= depth) {
+            return -1;
+        }
+    } else {
+        // Clearly, CLAMP is the right way to go for GridSamplePaddingMode_BORDER
+        // For GridSamplePaddingMode_REFLECTION, since we have reflected the values into (-1, 1),
+        // the leftover reflections degrade to GridSamplePaddingMode_BORDER
+        d = d < 0 ? 0 : (d > (depth - 1) ? (depth - 1) : d);
+        h = h < 0 ? 0 : ( h > (height - 1) ? (height - 1) : h);
+        w = w < 0 ? 0 : ( w > (width - 1) ? (width - 1) : w);
+    }
+    return ((d * height + h) * width + w) * 4;
 }
 
 void MNNGridSampleInterp(float* outputPtr, const float* inputPtr, const float* cordPtr, size_t inH, size_t inW, size_t outW, size_t channelCUnit, size_t inOffset, size_t outOffset, bool sampleMode, bool padMode) {
@@ -1626,6 +1660,134 @@ void MNNGridSampleInterp(float* outputPtr, const float* inputPtr, const float* c
                 Vec4 i1 = i10 * f0 + i11 * f1;
 
                 interp = i0 * h0 + i1 * h1;
+                Vec4::save(outputPtr + k * outOffset + 4 * ow, interp);
+            }
+        }
+    }
+}
+
+void MNNRoiPoolingMax(float* dst, const float* src, int hLen, int wLen, int iw) {
+    Vec4 max = Vec4(-FLT_MAX);
+    for (int h = 0; h < hLen; h++, src += iw * UNIT) {
+        for (int w = 0; w < wLen; w++) {
+            Vec4 in = Vec4::load(src + w * UNIT);
+            max = Vec4::max(max, in);
+        }
+    }
+    Vec4::save(dst, max);
+ }
+
+void MNNRoiAlignMax(float* dst, const float* src, const std::vector<std::vector<int>> &vecPos, const std::vector<std::vector<float>> &vecArea, int samplingRatioArea, int pooledHeight, int pooledWidth) {
+    for (int h = 0; h < pooledHeight; ++h, dst += pooledHeight * UNIT) {
+        int preCalcIdx = h * pooledWidth * samplingRatioArea;
+        for (int w = 0; w < pooledWidth; ++w) {
+            Vec4 res = Vec4(-FLT_MAX);
+            for (int i = 0; i < samplingRatioArea; ++i) {
+                const std::vector<int>& pos    = vecPos[preCalcIdx];
+                const std::vector<float>& area = vecArea[preCalcIdx];
+
+                Vec4 val0 = Vec4::load(src + pos[0] * UNIT);
+                Vec4 val1 = Vec4::load(src + pos[1] * UNIT);
+                Vec4 val2 = Vec4::load(src + pos[2] * UNIT);
+                Vec4 val3 = Vec4::load(src + pos[3] * UNIT);
+                Vec4 mla  = val0 * area[0];
+                mla       = Vec4::fma(mla, val1, area[1]);
+                mla       = Vec4::fma(mla, val2, area[2]);
+                mla       = Vec4::fma(mla, val3, area[3]);
+                res       = Vec4::max(res, mla);
+                preCalcIdx++;
+            }
+            Vec4::save(dst + w * UNIT, res);
+        }
+    }
+}
+
+void MNNRoiAlignAvg(float* dst, const float* src, const std::vector<std::vector<int>> &vecPos, const std::vector<std::vector<float>> &vecArea, int samplingRatioArea, int pooledHeight, int pooledWidth) {
+    float invSamplingCnt = 1.f / samplingRatioArea;
+    for (int h = 0; h < pooledHeight; ++h, dst += pooledHeight * UNIT) {
+        int preCalcIdx = h * pooledWidth * samplingRatioArea;
+        for (int w = 0; w < pooledWidth; ++w) {
+            Vec4 res = Vec4(0.f);
+            for (int i = 0; i < samplingRatioArea; ++i) {
+                const std::vector<int>& pos    = vecPos[preCalcIdx];
+                const std::vector<float>& area = vecArea[preCalcIdx];
+
+                Vec4 val0 = Vec4::load(src + pos[0] * UNIT);
+                Vec4 val1 = Vec4::load(src + pos[1] * UNIT);
+                Vec4 val2 = Vec4::load(src + pos[2] * UNIT);
+                Vec4 val3 = Vec4::load(src + pos[3] * UNIT);
+                Vec4 mla  = val0 * area[0];
+                mla       = Vec4::fma(mla, val1, area[1]);
+                mla       = Vec4::fma(mla, val2, area[2]);
+                mla       = Vec4::fma(mla, val3, area[3]);
+                res       += mla;
+                preCalcIdx++;
+            }
+            res = res * invSamplingCnt;
+            Vec4::save(dst + w * UNIT, res);
+        }
+    }
+}
+
+void MNNGridSampleInterp3D(float* outputPtr, const float* inputPtr, const float* cordPtr, size_t inD, size_t inH, size_t inW, size_t outW, size_t channelCUnit, size_t inOffset, size_t outOffset, bool sampleMode, bool padMode) {
+    for (auto ow = 0; ow < outW; ++ow) {
+        auto w = cordPtr[3 * ow + 0];
+        auto h = cordPtr[3 * ow + 1];
+        auto d = cordPtr[3 * ow + 2];
+        Vec4 interp;
+
+        if (sampleMode == true) { //sampleMode == SampleMode_NEAREST
+            int nd = ::floor(d + 0.5f);
+            int nh = ::floor(h + 0.5f);
+            int nw = ::floor(w + 0.5f);
+            size_t ns = MNNGridSampleComputeOffset3D(nd, nh, nw, inD, inH, inW, padMode);
+            for (int k = 0; k < channelCUnit; ++k) {
+                interp = ns == -1 ? Vec4(0.f) : Vec4::load(inputPtr + k * inOffset + ns);
+                Vec4::save(outputPtr + k * outOffset + 4 * ow, interp);
+            }
+        } else { //sampleMode == GridSampleMode_BILINEAR
+            int w0_d = ::floor(d);
+            int w0_h = ::floor(h);
+            int w0_w = ::floor(w);
+            int w1_d = ::ceil(d);
+            int w1_h = ::ceil(h);
+            int w1_w = ::ceil(w);
+            auto oneV = Vec4(1.0f);
+
+            auto f0 = Vec4((float)w1_w - w);
+            auto f1 = oneV - f0;
+            auto h0 = Vec4((float)w1_h - h);
+            auto h1 = oneV - h0;
+            auto d0 = Vec4((float)w1_d - d);
+            auto d1 = oneV - d0;
+
+            size_t s000 = MNNGridSampleComputeOffset3D(w0_d, w0_h, w0_w, inD, inH, inW, padMode);
+            size_t s001 = MNNGridSampleComputeOffset3D(w0_d, w0_h, w1_w, inD, inH, inW, padMode);
+            size_t s010 = MNNGridSampleComputeOffset3D(w0_d, w1_h, w0_w, inD, inH, inW, padMode);
+            size_t s011 = MNNGridSampleComputeOffset3D(w0_d, w1_h, w1_w, inD, inH, inW, padMode);
+            size_t s100 = MNNGridSampleComputeOffset3D(w1_d, w0_h, w0_w, inD, inH, inW, padMode);
+            size_t s101 = MNNGridSampleComputeOffset3D(w1_d, w0_h, w1_w, inD, inH, inW, padMode);
+            size_t s110 = MNNGridSampleComputeOffset3D(w1_d, w1_h, w0_w, inD, inH, inW, padMode);
+            size_t s111 = MNNGridSampleComputeOffset3D(w1_d, w1_h, w1_w, inD, inH, inW, padMode);
+
+            for (int k = 0; k < channelCUnit; ++k) {
+                Vec4 i000 = s000 == -1 ? Vec4(0.f) : Vec4::load(inputPtr + k * inOffset + s000);
+                Vec4 i001 = s001 == -1 ? Vec4(0.f) : Vec4::load(inputPtr + k * inOffset + s001);
+                Vec4 i010 = s010 == -1 ? Vec4(0.f) : Vec4::load(inputPtr + k * inOffset + s010);
+                Vec4 i011 = s011 == -1 ? Vec4(0.f) : Vec4::load(inputPtr + k * inOffset + s011);
+                Vec4 i100 = s100 == -1 ? Vec4(0.f) : Vec4::load(inputPtr + k * inOffset + s100);
+                Vec4 i101 = s101 == -1 ? Vec4(0.f) : Vec4::load(inputPtr + k * inOffset + s101);
+                Vec4 i110 = s110 == -1 ? Vec4(0.f) : Vec4::load(inputPtr + k * inOffset + s110);
+                Vec4 i111 = s111 == -1 ? Vec4(0.f) : Vec4::load(inputPtr + k * inOffset + s111);
+
+                Vec4 i00 = i000 * f0 + i001 * f1;
+                Vec4 i01 = i010 * f0 + i011 * f1;
+                Vec4 i0 = i00 * h0 + i01 * h1;
+                Vec4 i10 = i100 * f0 + i101 * f1;
+                Vec4 i11 = i110 * f0 + i111 * f1;
+                Vec4 i1 = i10 * h0 + i11 * h1;
+                interp = i0 * d0 + i1 * d1;
+
                 Vec4::save(outputPtr + k * outOffset + 4 * ow, interp);
             }
         }
@@ -1868,6 +2030,40 @@ void MNNPackTransposeUint8(uint8_t* dst, const uint8_t* src, size_t area,size_t 
 }
 
 void MNNPackTranspose(float* dst, const float* src, size_t area, size_t depth, int* areaOffset) {
+#if defined(MNN_USE_NEON)
+    if (3 == depth) {
+        int areaC4     = (int)area / 4;
+        int remain     = areaC4 * 4;
+        for (int i = 0; i < areaC4; ++i) {
+            auto srcCur   = src + 16 * i;
+            auto dstCur   = dst + 12 * i;
+            auto srcValue = vld4q_f32(srcCur);
+            float32x4x3_t dstValue;
+            dstValue.val[0] = srcValue.val[0];
+            dstValue.val[1] = srcValue.val[1];
+            dstValue.val[2] = srcValue.val[2];
+            vst3q_f32(dstCur, dstValue);
+        }
+        for (int i = remain; i < area; ++i) {
+            dst[3 * i + 0] = src[4 * i + 0];
+            dst[3 * i + 1] = src[4 * i + 1];
+            dst[3 * i + 2] = src[4 * i + 2];
+        }
+        return;
+    }
+#elif defined(MNN_USE_SSE)
+    if (3 == depth) {
+        if (area < 1) return;
+        for (int i = 0; i < area - 1; ++i) {
+            auto srcValue = Vec4::load(src + 4 * i);
+            Vec4::save(dst + 3 * i, srcValue);
+        }
+        for (int i = 0; i < 3; ++i) {
+            dst[3 * (area - 1) + i] = src[4 * (area - 1) + i];
+        }
+        return;
+    }
+#endif
     int c      = (int)depth;
     int cDiv4  = c / 4;
     int cAlign = cDiv4 * 4;
@@ -2076,51 +2272,6 @@ void MNNScaleAndAddBiasScalar(float* dst, const float* src, float bias, float al
     }
     for (int i=start; i<number; ++i) {
         dst[i] = src[i] * alpha + bias;
-    }
-}
-void MNNAxByClamp(float* C, const float* A, const float* B, size_t width, size_t cStride, size_t aStride, size_t bStride, size_t height, const float* parameters) {
-    int widthC4 = (int)width / 4;
-    if (widthC4 > 0) {
-        auto minF = Vec4(parameters[2]);
-        auto maxF = Vec4(parameters[3]);
-        auto alpha = Vec4(parameters[0]);
-        auto beta = Vec4(parameters[1]);
-        for (int y = 0; y < height; ++y) {
-            auto a = A + aStride * y;
-            auto b = B + bStride * y;
-            auto c = C + cStride * y;
-            for (int x = 0; x < width; ++x) {
-                auto av = Vec4::load(a + 4 * x);
-                auto bv = Vec4::load(b + 4 * x);
-                auto cv = av * alpha + bv * beta;
-                cv = Vec4::min(cv, maxF);
-                cv = Vec4::max(cv, minF);
-                Vec4::save(c + 4 * x, cv);
-            }
-        }
-        width = width - 4*widthC4;
-        C = C + widthC4 * 4;
-        A = A + widthC4 * 4;
-        B = B + widthC4 * 4;
-    }
-    if (width > 0) {
-        auto minF = parameters[2];
-        auto maxF = parameters[3];
-        auto alpha = parameters[0];
-        auto beta = parameters[1];
-        for (int y = 0; y < height; ++y) {
-            auto a = A + aStride * y;
-            auto b = B + bStride * y;
-            auto c = C + cStride * y;
-            for (int x = 0; x < width; ++x) {
-                auto av = a[x];
-                auto bv = b[x];
-                auto cv = av * alpha + bv * beta;
-                cv = std::min(cv, maxF);
-                cv = std::max(cv, minF);
-                c[x] = cv;
-            }
-        }
     }
 }
 #ifndef MNN_USE_NEON
@@ -2417,6 +2568,7 @@ void MNNSigmoidLowp(float* dst, const float* src, size_t dataSize) {
         }
         out = vrecpeq_f32(vaddq_f32(value,out));
         vst1q_f32(dst, out);
+        dst += 4;
         dataSize = dataSize - 4 * dataC4;
     }
 #endif
@@ -2694,6 +2846,11 @@ void MNNCoreFunctionInit() {
     gCoreFunction->MNNScaleAndAddBias = MNNScaleAndAddBias;
     gCoreFunction->MNNGridSampleComputeCord = MNNGridSampleComputeCord;
     gCoreFunction->MNNGridSampleInterp = MNNGridSampleInterp;
+    gCoreFunction->MNNGridSampleComputeCord3D = MNNGridSampleComputeCord3D;
+    gCoreFunction->MNNGridSampleInterp3D = MNNGridSampleInterp3D;
+    gCoreFunction->MNNRoiPoolingMax = MNNRoiPoolingMax;
+    gCoreFunction->MNNRoiAlignMax = MNNRoiAlignMax;
+    gCoreFunction->MNNRoiAlignAvg = MNNRoiAlignAvg;
     gCoreFunction->MNNAddC4WithStride = MNNAddC4WithStride;
     gCoreFunction->MNNCopyC4WithStride = MNNCopyC4WithStride;
 
@@ -2718,12 +2875,11 @@ void MNNCoreFunctionInit() {
     gCoreFunction->MNNC3ToFloatC3 = MNNC3ToFloatC3;
     gCoreFunction->MNNC3ToFloatRGBA = MNNC3ToFloatRGBA;
 
-#ifdef MNN_USE_ARMV82
     cpuinfo_arm_isa gCPUInfo;
     cpuinfo_arm_init(&gCPUInfo);
     gCoreFunction->supportFp16arith = gCPUInfo.fp16arith;
     gCoreFunction->supportSDot = gCPUInfo.dot;
-#endif
+    gCoreFunction->supportI8mm = gCPUInfo.i8mm;
     MNNCoreInt8FunctionInit();
     MNNFunctionInit();
 }

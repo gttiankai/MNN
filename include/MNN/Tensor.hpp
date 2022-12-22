@@ -6,13 +6,12 @@
 //  Copyright © 2018, Alibaba Group Holding Limited
 //
 
-#ifndef Tensor_hpp
-#define Tensor_hpp
+#ifndef MNN_Tensor_hpp
+#define MNN_Tensor_hpp
 
 #include <vector>
 #include <MNN/HalideRuntime.h>
 #include <MNN/MNNDefine.h>
-#define MNN_MAX_TENSOR_DIM 6
 
 namespace MNN {
 
@@ -44,7 +43,7 @@ public:
         /** string handle type */
         HANDLE_STRING = 1
     };
-    
+
     /** Tensor map type : Read or Write*/
     enum MapType {
         /** map Tensor for writing data*/
@@ -132,6 +131,12 @@ public:
      * @param deepCopy whether create new content and copy, currently only support deepCopy = false
      */
     static Tensor* clone(const Tensor* src, bool deepCopy = false);
+
+    /**
+     * @brief delete tensor.
+     * @param src     tensor
+     */
+    static void destroy(Tensor* tensor);
 public:
     /**
      * @brief for DEVICE tensor, copy data from given host tensor.
@@ -274,7 +279,7 @@ public:
      * @brief print tensor data. for DEBUG use only.
      */
     void print() const;
-    
+
     /**
      *@brief print tensor shape
      */

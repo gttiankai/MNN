@@ -1,33 +1,23 @@
 cmake_minimum_required(VERSION 3.0)
 # Versioning stuff
-if(NOT DEFINED MNN_VERSION_MAJOR)
-  set(MNN_VERSION_MAJOR 0)
-endif()
-if(NOT DEFINED MNN_VERSION_MINOR)
-  set(MNN_VERSION_MINOR 2)
-endif()
-if(NOT DEFINED MNN_VERSION_PATCH)
-  set(MNN_VERSION_PATCH 1)
-endif()
-if(NOT DEFINED MNN_VERSION_BUILD)
-  set(MNN_VERSION_BUILD 5)
-endif()
-if(NOT DEFINED MNN_VERSION_SUFFIX)
-  set(MNN_VERSION_SUFFIX git)
-endif()
-if (NOT PACKAGE_VERSION)
-  set(PACKAGE_VERSION
-    "${MNN_VERSION_MAJOR}.${MNN_VERSION_MINOR}.${MNN_VERSION_PATCH}.${MNN_VERSION_BUILD}${MNN_VERSION_SUFFIX}")
-endif()
-add_definitions("-DMNN_VERSION=\"${PACKAGE_VERSION}\"")
-add_definitions("-DMNN_VERSION_MAJOR=${MNN_VERSION_MAJOR}")
-add_definitions("-DMNN_VERSION_MINOR=${MNN_VERSION_MINOR}")
-add_definitions("-DMNN_VERSION_PATCH=${MNN_VERSION_PATCH}")
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/include/MNN/MNNDefine.h" MNN_DEFINE)
+string(REGEX MATCH "MNN_VERSION_MAJOR [0-9]+" MNN_VERSION_MAJOR_DEFINE ${MNN_DEFINE})
+string(REGEX MATCH "[0-9]+" MNN_VERSION_MAJOR ${MNN_VERSION_MAJOR_DEFINE})
+string(REGEX MATCH "MNN_VERSION_MINOR [0-9]+" MNN_VERSION_MINOR_DEFINE ${MNN_DEFINE})
+string(REGEX MATCH "[0-9]+" MNN_VERSION_MINOR ${MNN_VERSION_MINOR_DEFINE})
+string(REGEX MATCH "MNN_VERSION_PATCH [0-9]+" MNN_VERSION_PATCH_DEFINE ${MNN_DEFINE})
+string(REGEX MATCH "[0-9]+" MNN_VERSION_PATCH ${MNN_VERSION_PATCH_DEFINE})
+set(MNN_VERSION ${MNN_VERSION_MAJOR}.${MNN_VERSION_MINOR}.${MNN_VERSION_PATCH})
 
-# CMP0048 is related to letting CMake managing the package version for us
-
-cmake_policy(SET CMP0048 NEW)
-project(MNN VERSION ${MNN_VERSION_MAJOR}.${MNN_VERSION_MINOR}.${MNN_VERSION_PATCH}.${MNN_VERSION_BUILD} LANGUAGES C CXX ASM)
+# Clear VERSION variables when no VERSION is given to project()
+if(POLICY CMP0048)
+  cmake_policy(SET CMP0048 NEW)
+endif()
+# MSVC runtime library flags are selected by an abstraction.
+if(POLICY CMP0091)
+  cmake_policy(SET CMP0091 NEW)
+endif()
+project(MNN VERSION ${MNN_VERSION} LANGUAGES C CXX ASM)
 # complier options
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_CXX_STANDARD 11)
@@ -35,14 +25,6 @@ set(CMAKE_MODULE_PATH
   ${CMAKE_MODULE_PATH}
   "${CMAKE_CURRENT_LIST_DIR}/cmake"
 )
-#add_custom_command(OUTPUT "${CMAKE_CURRENT_LIST_DIR}/include/MNN/VCS.h"
-#    COMMAND ${CMAKE_COMMAND} "-DNAMES=MNN"
-#    "-DMNN_SOURCE_DIR=${CMAKE_CURRENT_LIST_DIR}"
-#    "-DHEADER_FILE=${CMAKE_CURRENT_LIST_DIR}/include/MNN/VCS.h"
-#    -P "${CMAKE_CURRENT_LIST_DIR}/cmake/GenerateVersionFromVCS.cmake"
-#    COMMENT "Generating Version Control Info"
-#)
-#add_custom_target (GenVCSHDR DEPENDS "${CMAKE_CURRENT_LIST_DIR}/include/MNN/VCS.h")
 # Required for OpenCL/OpenGL/Vulkan CodeGen
 include(FindPythonInterp REQUIRED)
 # build options
@@ -59,12 +41,12 @@ option(MNN_BUILD_TOOLS "Build tools/cpp or not" ON)
 option(MNN_BUILD_QUANTOOLS "Build Quantized Tools or not" OFF)
 option(MNN_EVALUATION "Build Evaluation Tools or not" OFF)
 option(MNN_BUILD_CONVERTER "Build Converter" OFF)
-option(MNN_SUPPORT_TFLITE_QUAN "Enable MNN's tflite quantized op" ON)
+option(MNN_SUPPORT_DEPRECATED_OP "Enable MNN's tflite quantized op" ON)
 option(MNN_DEBUG_MEMORY "MNN Debug Memory Access" OFF)
 option(MNN_DEBUG_TENSOR_SIZE "Enable Tensor Size" OFF)
 option(MNN_GPU_TRACE "Enable MNN Gpu Debug" OFF)
 option(MNN_PORTABLE_BUILD "Link the static version of third party libraries where possible to improve the portability of built executables" OFF)
-option(MNN_SEP_BUILD "Build MNN Backends and expression seperately. Only works with MNN_BUILD_SHARED_LIBS=ON" ON)
+option(MNN_SEP_BUILD "Build MNN Backends and expression separately. Only works with MNN_BUILD_SHARED_LIBS=ON" ON)
 option(NATIVE_LIBRARY_OUTPUT "Native Library Path" OFF)
 option(NATIVE_INCLUDE_OUTPUT "Native Include Path" OFF)
 option(MNN_AAPL_FMWK "Build MNN.framework instead of traditional .a/.dylib" OFF)
@@ -76,6 +58,7 @@ option(MNN_ENABLE_COVERAGE "Build with coverage enable" OFF)
 option(MNN_BUILD_PROTOBUFFER "Build with protobuffer in MNN" ON)
 option(MNN_BUILD_OPENCV "Build OpenCV api in MNN." OFF)
 option(MNN_INTERNAL "Build with MNN internal features, such as model authentication, metrics logging" OFF)
+option(MNN_JNI "Build MNN Jni for java to use" OFF)
 
 IF (NOT DEFINED MNN_USE_SPARSE_COMPUTE)
   IF (TARGET_OS_IPHONE OR TARGET_OS_SIMULATOR)
@@ -107,8 +90,8 @@ IF(WIN32)
     SET(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /Zi")
     SET(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Zi")
 
-    SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /wd4267 /wd4018 /wd4251 /wd4996 /wd4244 /wd4146 /wd4129 /wd4305 /wd4275 /wd4819")
-    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4267 /wd4018 /wd4251 /wd4996 /wd4244 /wd4146 /wd4129 /wd4305 /wd4275 /wd4819")
+    SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /wd4267 /wd4018 /wd4251 /wd4996 /wd4244 /wd4146 /wd4129 /wd4305 /wd4275 /wd4101")
+    SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4267 /wd4018 /wd4251 /wd4996 /wd4244 /wd4146 /wd4129 /wd4305 /wd4275 /wd4101")
   ENDIF()
 ENDIF()
 
@@ -118,11 +101,52 @@ IF( MNN_ENABLE_COVERAGE)
     SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fprofile-arcs -ftest-coverage")
 ENDIF()
 
+# do this before protobuf, make sure wincrt config of protobuf and MNN is same
+if(MSVC)
+    # same as protobuf, otherwise config is inconsistent
+    if(CMAKE_VERSION VERSION_GREATER 3.15 OR CMAKE_VERSION VERSION_EQUAL 3.15)
+      set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreaded$<$<CONFIG:Debug>:Debug>)
+      if(NOT MNN_WIN_RUNTIME_MT)
+        set(CMAKE_MSVC_RUNTIME_LIBRARY ${CMAKE_MSVC_RUNTIME_LIBRARY}DLL)
+      endif()
+    else()
+      foreach(flag_var
+          CMAKE_C_FLAGS CMAKE_C_FLAGS_DEBUG CMAKE_C_FLAGS_RELEASE
+          CMAKE_C_FLAGS_MINSIZEREL CMAKE_C_FLAGS_RELWITHDEBINFO
+          CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
+          CMAKE_CXX_FLAGS_MINSIZEREL CMAKE_CXX_FLAGS_RELWITHDEBINFO)
+          if (MNN_WIN_RUNTIME_MT)
+              if(${flag_var} MATCHES "/MD")
+                  string(REGEX REPLACE "/MD" "/MT" ${flag_var} "${${flag_var}}")
+              endif()
+          else ()
+              if(${flag_var} MATCHES "/MT")
+                  string(REGEX REPLACE "/MT" "/MD" ${flag_var} "${${flag_var}}")
+              endif()
+          endif ()
+      endforeach()
+    endif()
+    set(protobuf_BUILD_SHARED_LIBS ${MNN_BUILD_SHARED_LIBS})
+endif()
+
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/macros.cmake)
 IF(MNN_BUILD_PROTOBUFFER)
 IF(MNN_BUILD_CONVERTER)
+  IF(MSVC)
+    set(protobuf_BUILD_SHARED_LIBS ${MNN_BUILD_SHARED_LIBS})
+    IF((NOT MNN_BUILD_SHARED_LIBS) AND (NOT MNN_WIN_RUNTIME_MT))
+      message(FATAL_ERROR "When MNN_BUILD_CONVERTER=ON and MNN_BUILD_SHARED_LIBS=OFF, MNN_WIN_RUNTIME_MT must be ON. Because protobuf not support the config(static /MD)")
+    ENDIF()
+  ENDIF()
   add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/3rd_party/protobuf/cmake)
 ENDIF()
+ENDIF()
+
+# specify source file encoding explicitly, fix cross-platform garbled output issue
+# we need do this after protobuf which set different execution-charset
+IF(MSVC)
+  set(CMAKE_C_FLAGS "${CMAKE_CXX_FLAGS} /source-charset:utf-8")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /source-charset:utf-8")
 ENDIF()
 
 IF(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT MNN_BUILD_SHARED_LIBS AND NOT (MSVC OR WIN32))
@@ -136,8 +160,8 @@ ENDIF()
 if(MNN_FORBID_MULTI_THREAD)
     add_definitions(-DMNN_FORBIT_MULTI_THREADS)
 endif()
-if(MNN_SUPPORT_TFLITE_QUAN)
-    add_definitions(-DMNN_SUPPORT_TFLITE_QUAN)
+if(MNN_SUPPORT_DEPRECATED_OP)
+    add_definitions(-DMNN_SUPPORT_DEPRECATED_OP)
 endif()
 
 # debug options
@@ -162,6 +186,13 @@ option(MNN_AVX512 "Enable AVX512" OFF)
 option(MNN_CUDA "Enable CUDA" OFF)
 option(MNN_TENSORRT "Enable TensorRT" OFF)
 option(MNN_COREML "Enable CoreML" OFF)
+option(MNN_NNAPI "Enable NNAPI" OFF)
+
+option(MNN_CUDA_PROFILE "Enable CUDA profile" OFF)
+
+if (NOT MNN_CUDA OR NOT CMAKE_SYSTEM_NAME MATCHES "^Linux")
+  set(MNN_CUDA_PROFILE OFF)
+endif()
 
 if (MNN_USE_THREAD_POOL)
     message(STATUS "Use Threadpool, forbid openmp")
@@ -186,11 +217,11 @@ ELSE()
     set(MNN_HIDDEN TRUE)
 ENDIF(CMAKE_BUILD_TYPE MATCHES Debug)
 
-
 message(STATUS ">>>>>>>>>>>>>")
 message(STATUS "MNN BUILD INFO:")
 message(STATUS "\tSystem: ${CMAKE_SYSTEM_NAME}")
 message(STATUS "\tProcessor: ${CMAKE_SYSTEM_PROCESSOR}")
+message(STATUS "\tVersion: ${MNN_VERSION}")
 message(STATUS "\tMetal: ${MNN_METAL}")
 message(STATUS "\tOpenCL: ${MNN_OPENCL}")
 message(STATUS "\tOpenGL: ${MNN_OPENGL}")
@@ -199,35 +230,24 @@ message(STATUS "\tARM82: ${MNN_ARM82}")
 message(STATUS "\toneDNN: ${MNN_ONEDNN}")
 message(STATUS "\tTensorRT: ${MNN_TENSORRT}")
 message(STATUS "\tCoreML: ${MNN_COREML}")
+message(STATUS "\tNNAPI: ${MNN_NNAPI}")
 message(STATUS "\tCUDA: ${MNN_CUDA}")
 message(STATUS "\tOpenMP: ${MNN_OPENMP}")
 message(STATUS "\tBF16: ${MNN_SUPPORT_BF16}")
 message(STATUS "\tThreadPool: ${MNN_USE_THREAD_POOL}")
 message(STATUS "\tHidden: ${MNN_HIDDEN}")
 message(STATUS "\tBuild Path: ${CMAKE_CURRENT_BINARY_DIR}")
+message(STATUS "\tCUDA PROFILE: ${MNN_CUDA_PROFILE}")
 
-if(MSVC)
-    if(${CMAKE_VERSION} VERSION_LESS "3.14.0")
-      message(FATAL_ERROR "MNN requires CMake 3.14+ to build on Windows!")
-    endif()
-    foreach(flag_var
-        CMAKE_C_FLAGS CMAKE_C_FLAGS_DEBUG CMAKE_C_FLAGS_RELEASE
-        CMAKE_C_FLAGS_MINSIZEREL CMAKE_C_FLAGS_RELWITHDEBINFO
-        CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
-        CMAKE_CXX_FLAGS_MINSIZEREL CMAKE_CXX_FLAGS_RELWITHDEBINFO)
-        if (MNN_WIN_RUNTIME_MT)
-            if(${flag_var} MATCHES "/MD")
-                string(REGEX REPLACE "/MD" "/MT" ${flag_var} "${${flag_var}}")
-            endif()
-        else ()
-            if(${flag_var} MATCHES "/MT")
-                string(REGEX REPLACE "/MT" "/MD" ${flag_var} "${${flag_var}}")
-            endif()
-        endif ()
-    endforeach()
-elseif(CMAKE_SYSTEM_NAME MATCHES "^Android" OR CMAKE_SYSTEM_NAME MATCHES "^Linux")
+if(CMAKE_SYSTEM_NAME MATCHES "^Android" OR CMAKE_SYSTEM_NAME MATCHES "^Linux")
     add_definitions(-fPIC)
 endif()
+
+# Raspberry Pi 32-bit fix
+if(CMAKE_SYSTEM_NAME MATCHES "^Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^armv7")
+    add_definitions(-march=armv7-a -mfpu=neon-vfpv4)
+endif()
+
 if(CMAKE_SYSTEM_NAME MATCHES "^Android")
     add_definitions(-DMNN_BUILD_FOR_ANDROID)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^arm")
@@ -339,14 +359,6 @@ list(APPEND MNN_TARGETS MNNCV)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64)|(X86_64)|(x64)|(X64)|(amd64)|(AMD64)|(i686)")
     if (APPLE)
         add_definitions(-fno-stack-check) # Workaround a Xcode 11.X bug
-    endif()
-endif()
-if (MNN_USE_SSE)
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64)|(X86_64)|(x64)|(X64)|(amd64)|(AMD64)|(i686)")
-        target_compile_options(MNNCV PRIVATE -DMNN_USE_SSE)
-        if (NOT MSVC)
-            target_compile_options(MNNCV PRIVATE -msse4.1)
-        endif()
     endif()
 endif()
 
@@ -470,9 +482,18 @@ IF(MNN_COREML)
     find_library(COREML CoreML)
     find_library(FOUNDATION Foundation)
     find_library(METAL Metal)
+    find_library(VIDEO CoreVideo)
     list(APPEND MNN_EXTRA_DEPENDS ${COREML})
     list(APPEND MNN_EXTRA_DEPENDS ${FOUNDATION})
     list(APPEND MNN_EXTRA_DEPENDS ${METAL})
+    list(APPEND MNN_EXTRA_DEPENDS ${VIDEO})
+ENDIF()
+
+# NNAPI
+IF(MNN_NNAPI)
+    add_definitions(-DMNN_NNAPI_ENABLED=1)
+    add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/source/backend/nnapi/)
+    list(APPEND MNN_OBJECTS_TO_LINK $<TARGET_OBJECTS:MNN_NNAPI>)
 ENDIF()
 
 # Vulkan
@@ -559,8 +580,10 @@ ENDIF()
 if (MNN_INTERNAL)
     target_compile_options(MNNCore PRIVATE -DMNN_INTERNAL_ENABLED)
     target_compile_options(MNN_Express PRIVATE -DMNN_INTERNAL_ENABLED)
-    include(${CMAKE_CURRENT_LIST_DIR}/source/internal/auth/CMakeLists.txt)
     include(${CMAKE_CURRENT_LIST_DIR}/source/internal/logging/CMakeLists.txt)
+    if(CMAKE_SYSTEM_NAME MATCHES "^Linux")
+        list(APPEND MNN_EXTRA_DEPENDS "-lcurl -lssl -lcrypto")
+    endif()
 endif()
 
 # Train
@@ -661,7 +684,18 @@ if(APPLE)
 endif()
 add_dependencies(MNN MNNCore MNNCV MNNTransform MNNMath MNNCPU)
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/tools/converter)
+IF(WIN32 AND MNN_BUILD_CONVERTER AND MNN_BUILD_SHARED_LIBS)
+# Because of dllimport/dllexport, we merge MNN and MNNConvertDeps together, which depend protobuf
+  target_link_libraries(MNN PUBLIC ${Protobuf_LIBRARIES})
+ENDIF()
+# Merge MNN/MNNExpress/MNNOpenCV and other backends into one .lib/.dll on Windows
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/tools/cv)
+IF(MNN_BUILD_OPENCV AND NOT MNN_SEP_BUILD)
+  IF(MSVC)
+    target_compile_definitions(MNNOpenCV PRIVATE "-DBUILDING_MNN_DLL" INTERFACE "-DUSING_MNN_DLL")
+  ENDIF()
+  target_sources(MNN PRIVATE $<TARGET_OBJECTS:MNNOpenCV>)
+ENDIF()
 
 if(CMAKE_SYSTEM_NAME MATCHES "^Linux")
 # Using -pthread, needed by thread-safe implemention of glibc, is better than only using -lpthread
@@ -753,6 +787,10 @@ ELSE()
       ARCHIVE DESTINATION lib
       FRAMEWORK DESTINATION /Library/Frameworks/
   )
+  if (NOT MNN_AAPL_FMWK)
+      INSTALL(FILES ${MNN_PUB_HDRS} DESTINATION include/MNN/)
+      INSTALL(FILES ${MNN_EXPR_PUB_HDRS} DESTINATION include/MNN/expr/)
+  endif()
   FOREACH(HDR ${MNN_EXPR_PUB_HDRS})
     SET_SOURCE_FILES_PROPERTIES(${HDR} PROPERTIES MACOSX_PACKAGE_LOCATION Headers/expr/ )
   ENDFOREACH()
@@ -763,3 +801,6 @@ ELSE()
     SET_SOURCE_FILES_PROPERTIES(${CMAKE_CURRENT_BINARY_DIR}/mnn.metallib PROPERTIES MACOSX_PACKAGE_LOCATION Resources/)
   ENDIF()
 ENDIF()
+if (MNN_JNI)
+    add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/source/jni/)
+endif()

@@ -3,6 +3,7 @@
 namespace MNN {
 extern void ___GeometryShape___create__();
 extern void ___GeometryPermute___create__();
+extern void ___GeometryDet___create__();
 extern void ___GeometryTile___create__();
 extern void ___GeometryReshape___create__();
 extern void ___GeometryReduce___create__();
@@ -13,7 +14,7 @@ extern void ___GeometryBroadcastTo___create__();
 extern void ___GeometryConvert___create__();
 extern void ___GeometryCosineSimilarity___create__();
 extern void ___GeometryImageOp___create__();
-extern void ___GeometryGather___create__();
+extern void ___GeometryScatter___create__();
 extern void ___GeometryCrop___create__();
 extern void ___GeometryStridedSlice___create__();
 extern void ___GeometrySelect___create__();
@@ -43,6 +44,7 @@ extern void ___GeometryBinary___create__();
 void registerGeometryOps() {
 ___GeometryShape___create__();
 ___GeometryPermute___create__();
+___GeometryDet___create__();
 ___GeometryTile___create__();
 ___GeometryReshape___create__();
 ___GeometryReduce___create__();
@@ -53,7 +55,7 @@ ___GeometryBroadcastTo___create__();
 ___GeometryConvert___create__();
 ___GeometryCosineSimilarity___create__();
 ___GeometryImageOp___create__();
-___GeometryGather___create__();
+___GeometryScatter___create__();
 ___GeometryCrop___create__();
 ___GeometryStridedSlice___create__();
 ___GeometrySelect___create__();

@@ -18,6 +18,7 @@
 #include <MNN/expr/ExecutorScope.hpp>
 #include "core/Backend.hpp"
 #include "RuntimeAttr.hpp"
+#include <stack>
 #define DEFAULT_BACKUP_RUNTIME_KEY (std::make_pair(MNN_FORWARD_CPU, 1))
 #ifdef MNN_EXPR_ENABLE_PROFILER
 #define MNN_EXPRESS_ERROR_REPORT
@@ -71,14 +72,6 @@ void Executor::Profiler::addFlops(const std::string& opType, float flops) {
     iter->second += flops;
 }
 #endif
-
-struct Executor::Cache{
-    AutoStorage<uint8_t> modelBuffer;
-    AutoStorage<uint8_t> cacheBuffer;
-    size_t cacheOffset = 0;
-    std::string cacheFile;
-    size_t lastCacheSize = 0;
-};
 
 void Executor::setGlobalExecutorConfig(MNNForwardType type, const BackendConfig& config, int numberThread) {
     std::lock_guard<std::mutex> _l(mMutex);
@@ -208,8 +201,9 @@ std::shared_ptr<Executor> Executor::newExecutor(MNNForwardType type,
     info.type = type;
     info.numThread = numberThread;
     info.user = const_cast<BackendConfig*>(&config);
-    std::shared_ptr<Runtime> bn(creator->onCreate(info));
-    return std::shared_ptr<Executor>(new Executor(bn, type, numberThread));
+    std::shared_ptr<Runtime> runtime(creator->onCreate(info));
+    auto executor = new Executor(runtime, type, numberThread);
+    return std::shared_ptr<Executor>(executor);
 }
 
 RuntimeInfo Executor::getRuntime() {
@@ -236,7 +230,7 @@ static std::pair<const void*, size_t> getCache(std::shared_ptr<Runtime> &rt) {
     return std::make_pair(nullptr, 0);
 }
 
-static void writeCacheFile(std::shared_ptr<Executor::Cache> cache, std::pair<const void*, size_t> buffer) {
+static void writeCacheFile(std::shared_ptr<Cache> cache, std::pair<const void*, size_t> buffer) {
     auto verifyInfo = std::make_pair((const void*)cache->modelBuffer.get(), cache->cacheOffset);
     bool res = FileLoader::write(cache->cacheFile.c_str(), buffer);
     if (!res) {
@@ -249,6 +243,11 @@ Executor::RuntimeManager* Executor::RuntimeManager::createRuntimeManager(std::ve
         return nullptr;
     }
     return createRuntimeManager(configs[0]);
+}
+void Executor::RuntimeManager::destroy(RuntimeManager* rtmgr) {
+    if (nullptr != rtmgr) {
+        delete rtmgr;
+    }
 }
 
 void Executor::RuntimeManager::setMode(Interpreter::SessionMode mode) {
@@ -272,14 +271,20 @@ bool Executor::RuntimeManager::getInfo(Interpreter::SessionInfoCode code, void* 
     switch (code) {
         case Interpreter::MEMORY: {
             auto dst     = (float*)ptr;
-            float summer = mRuntime.second->onGetMemoryInMB();
-            for (auto& r : mRuntime.first) {
-                if (r.second.get() != mRuntime.second.get()) {
+            float summer = mInside->mRuntime.second->onGetMemoryInMB();
+            for (auto& r : mInside->mRuntime.first) {
+                if (r.second.get() != mInside->mRuntime.second.get()) {
                     summer += r.second->onGetMemoryInMB();
                 }
             }
             *dst = summer;
             return true;
+        } break;
+        case Interpreter::BACKENDS: {
+            auto dst = (int*)ptr;
+            if (!mInside->mRuntime.first.empty()) {
+                *dst = mInside->mRuntime.first.begin()->first;
+            }
         } break;
         default: {
             // Do nothing
@@ -325,21 +330,34 @@ Executor::RuntimeManager* Executor::RuntimeManager::createRuntimeManager(const S
         }
         originRt.insert(std::make_pair(std::make_pair(compute.type, compute.numThread), std::shared_ptr<Runtime>(newBn)));
     }
-    res->mRuntime.second =  originRt[DEFAULT_BACKUP_RUNTIME_KEY];
-    res->mRuntime.first.insert(std::make_pair(compute.type, originRt[std::make_pair(compute.type, compute.numThread)]));
-    res->mInfo = originRt[std::make_pair(compute.type, compute.numThread)];
+    res->mInside->mRuntime.second =  originRt[DEFAULT_BACKUP_RUNTIME_KEY];
+    res->mInside->mRuntime.first.insert(std::make_pair(compute.type, originRt[std::make_pair(compute.type, compute.numThread)]));
+    res->mInside->mInfo = originRt[std::make_pair(compute.type, compute.numThread)];
+    res->mInside->mNumberThread = compute.numThread;
+    if (nullptr != config.backendConfig) {
+        res->mInside->mConfig = *config.backendConfig;
+        res->mInside->mUserConfig = true;
+    } else {
+        res->mInside->mUserConfig = false;
+    }
     return res;
+}
+BackendConfig* Executor::RuntimeManager::getBnConfig() {
+    if (mInside->mUserConfig) {
+        return &mInside->mConfig;
+    }
+    return nullptr;
 }
 
 
 void Executor::RuntimeManager::setCache(std::string cacheName) {
-    mCache.reset(new Cache);
-    mCache->cacheFile = cacheName;
-    if (nullptr == mCache->cacheFile.c_str()) {
+    mInside->mCache.reset(new Cache);
+    mInside->mCache->cacheFile = cacheName;
+    if (nullptr == mInside->mCache->cacheFile.c_str()) {
         MNN_ERROR("Empty cacheFile\n");
         return;
     }
-    std::unique_ptr<FileLoader> loader(new FileLoader(mCache->cacheFile.c_str()));
+    std::unique_ptr<FileLoader> loader(new FileLoader(mInside->mCache->cacheFile.c_str()));
     if (!loader->valid()) {
         MNN_ERROR("Load Cache file error.\n");
         return;
@@ -353,36 +371,36 @@ void Executor::RuntimeManager::setCache(std::string cacheName) {
         MNN_ERROR("Load Cache file error.\n");
         return;
     }
-    bool success = loader->merge(mCache->cacheBuffer);
+    bool success = loader->merge(mInside->mCache->cacheBuffer);
     if (!success) {
         MNN_ERROR("Alloc memory for Cache error.\n");
         return;
     }
 
     // load cache
-    bool valid = loadCache(mInfo, mCache->cacheBuffer.get() + mCache->cacheOffset,
-                           mCache->cacheBuffer.size() - mCache->cacheOffset);
+    bool valid = loadCache(mInside->mInfo, mInside->mCache->cacheBuffer.get() + mInside->mCache->cacheOffset,
+                           mInside->mCache->cacheBuffer.size() - mInside->mCache->cacheOffset);
     if(!valid) {
         // Reset cache
-        loadCache(mInfo, nullptr, 0);
+        loadCache(mInside->mInfo, nullptr, 0);
         MNN_PRINT("Cache invalid, will be reset\n");
     }
 
-    mCache->lastCacheSize = mCache->cacheBuffer.size() - mCache->cacheOffset;
+    mInside->mCache->lastCacheSize = mInside->mCache->cacheBuffer.size() - mInside->mCache->cacheOffset;
 }
 
 void Executor::RuntimeManager::updateCache() {
-    mInfo->waitAsyncWork();
-    auto buffer = getCache(mInfo);
+    mInside->mInfo->waitAsyncWork();
+    auto buffer = getCache(mInside->mInfo);
 
     //When current cacheSize bigger than previous, update
-    if (buffer.first != nullptr && buffer.second > mCache->lastCacheSize) {
-        MNN_PRINT("Update cache to %s, size = %zu\n", mCache->cacheFile.c_str(), buffer.second);
-        writeCacheFile(mCache, buffer);
-        mCache->lastCacheSize = buffer.second;
+    if (buffer.first != nullptr && buffer.second > mInside->mCache->lastCacheSize) {
+        MNN_PRINT("Update cache to %s, size = %zu\n", mInside->mCache->cacheFile.c_str(), buffer.second);
+        writeCacheFile(mInside->mCache, buffer);
+        mInside->mCache->lastCacheSize = buffer.second;
     }
     // Reset cache
-    loadCache(mInfo, nullptr, 0);
+    loadCache(mInside->mInfo, nullptr, 0);
 }
 
 std::vector<bool> Executor::RuntimeManager::isBackendSupport(const std::vector<MNNForwardType> types) {
@@ -442,6 +460,7 @@ public:
 
     ErrorCode compute();
     ErrorCode resize();
+    ErrorCode resizeImpl();
     std::pair<std::shared_ptr<Backend>, std::shared_ptr<Backend>> bakcends() const {
         return std::make_pair(mBackend, mBackupBackend);
     }
@@ -533,70 +552,76 @@ Executor::ComputeCache::~ComputeCache() {
 #endif
 }
 ErrorCode Executor::ComputeCache::compute() {
-    if (mShapeDirty) {
-        auto code = resize();
-        if (NO_ERROR != code) {
-            return code;
-        }
-    }
-    if (!mContentDirty) {
-        return NO_ERROR;
-    }
-    for (auto& c : mInputInside) {
-        if (c->mContentDirty) {
-            return CALL_BACK_STOP;
-        }
-    }
-    for (auto c : mInputs) {
-        auto code = c->compute();
-        if (NO_ERROR != code) {
-            return code;
-        }
-    }
-    mBackend->onExecuteBegin();
-    mBackupBackend->onExecuteBegin();
-    for (auto& buffer : mCmdBuffer) {
-        for (int i=0; i<buffer.command.size(); ++i) {
-#ifdef MNN_EXPR_ENABLE_PROFILER
-            Timer autoTime;
-#endif
-            auto& iter = *buffer.command[i];
-            auto code = iter.execution->onExecute(iter.inputs, iter.outputs);
+    std::stack<ComputeCache*> dfsStack;
+    std::set<ComputeCache*> visited;
+    dfsStack.push(this);
+    while (!dfsStack.empty()) {
+        //printf("stcak = %d\n", dfsStack.size());
+        auto cache = dfsStack.top();
+        if (cache->mShapeDirty) {
+            auto code = cache->resize();
             if (NO_ERROR != code) {
-#ifdef MNN_EXPRESS_ERROR_REPORT
-                auto op = iter.op;
-                MNN_ERROR("Error to compute for %s, \n", EnumNameOpType(op->type()));
-#endif
-                mBackend->onExecuteEnd();
+                cache->mShapeDirty = true;
                 return code;
             }
+        }
+        if (!cache->mContentDirty) {
+            visited.insert(cache);
+            dfsStack.pop();
+            continue;
+        }
+        for (auto& c : cache->mInputInside) {
+            if (c->mContentDirty) {
+                return CALL_BACK_STOP;
+            }
+        }
+        auto hasUnvisitInput = [&] () {
+            for (auto c : cache->mInputs) {
+                if (visited.find(c.get()) == visited.end()) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        if (hasUnvisitInput()) {
+            for (auto c : cache->mInputs) {
+                dfsStack.push(c.get());
+            }
+        } else {
+            visited.insert(cache);
+            dfsStack.pop();
+            cache->mBackend->onExecuteBegin();
+            cache->mBackupBackend->onExecuteBegin();
+            for (auto& buffer : cache->mCmdBuffer) {
+                for (int i=0; i<buffer.command.size(); ++i) {
 #ifdef MNN_EXPR_ENABLE_PROFILER
-            float costTime = (float)autoTime.durationInUs() / (float)1000;
-            auto op = iter.op;
-            ExecutorScope::Current()->addOpCostTime((int)op->type(), costTime);
+                    Timer autoTime;
 #endif
+                    auto& iter = *buffer.command[i];
+                    auto code = iter.execution->onExecute(iter.inputs, iter.outputs);
+                    if (NO_ERROR != code) {
+#ifdef MNN_EXPRESS_ERROR_REPORT
+                        auto op = iter.op;
+                        MNN_ERROR("Error to compute for %s, \n", EnumNameOpType(op->type()));
+#endif
+                        cache->mBackend->onExecuteEnd();
+                        return code;
+                    }
+#ifdef MNN_EXPR_ENABLE_PROFILER
+                    float costTime = (float)autoTime.durationInUs() / (float)1000;
+                    auto op = iter.op;
+                    ExecutorScope::Current()->addOpCostTime((int)op->type(), costTime);
+#endif
+                }
+            }
+            cache->mBackend->onExecuteEnd();
+            cache->mBackupBackend->onExecuteEnd();
+            cache->mContentDirty = false;
         }
     }
-    mBackend->onExecuteEnd();
-    mBackupBackend->onExecuteEnd();
-    mContentDirty = false;
     return NO_ERROR;
 }
-ErrorCode Executor::ComputeCache::resize() {
-    if (!mShapeDirty) {
-        return NO_ERROR;
-    }
-    for (auto& c : mInputInside) {
-        if (c->mInfoDirty) {
-            return CALL_BACK_STOP;
-        }
-    }
-    for (auto c : mInputs) {
-        auto code = c->resize();
-        if (NO_ERROR != code) {
-            return code;
-        }
-    }
+ErrorCode Executor::ComputeCache::resizeImpl() {
     mShapeDirty = false;
     mCmdBuffer.resize(mUnits.size());
     /** Encoder Begin */
@@ -659,7 +684,7 @@ ErrorCode Executor::ComputeCache::resize() {
             GeometryComputerUtils::makeRaster(buffer, mCmdBuffer[unitIndex], mContext);
             for (auto out : iter.outputs) {
                 if (TensorUtils::getDescribe(out)->usage == Tensor::InsideDescribe::OUTPUT) {
-                    mContext.getRasterCacheCreateRecurrse(out, mCmdBuffer[unitIndex]);
+                    mContext.getRasterCacheCreateRecursive(out, mCmdBuffer[unitIndex]);
                 }
             }
 #ifdef MNN_EXPR_ENABLE_PROFILER
@@ -801,6 +826,7 @@ ErrorCode Executor::ComputeCache::resize() {
                     }
                 }
             }
+
             auto code= cmd.execution->onResize(cmd.inputs, cmd.outputs);
             if (NO_ERROR != code) {
                 return code;
@@ -855,33 +881,107 @@ ErrorCode Executor::ComputeCache::resize() {
     mContentDirty = true;
     return NO_ERROR;
 }
+ErrorCode Executor::ComputeCache::resize() {
+    std::stack<ComputeCache*> dfsStack;
+    std::set<ComputeCache*> visited;
+    dfsStack.push(this);
+    while (!dfsStack.empty()) {
+        auto cache = dfsStack.top();
+        if (!cache->mShapeDirty) {
+            visited.insert(cache);
+            dfsStack.pop();
+            continue;
+        }
+        for (auto& c : cache->mInputInside) {
+            if (c->mInfoDirty) {
+                return CALL_BACK_STOP;
+            }
+        }
+        auto hasUnvisitInput = [&] () {
+            for (auto c : cache->mInputs) {
+                if (visited.find(c.get()) == visited.end()) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        if (hasUnvisitInput()) {
+            for (auto c : cache->mInputs) {
+                dfsStack.push(c.get());
+            }
+        } else {
+            visited.insert(cache);
+            dfsStack.pop();
+            auto code = cache->resizeImpl();
+            if (code != NO_ERROR) {
+                return code;
+            }
+        }
+    }
+    return NO_ERROR;
+}
 
 static void _collectExecuteUnit(std::vector<std::shared_ptr<Executor::Unit>>& dest, EXPRP expr) {
-    auto& inputs = expr->inputs();
-    auto& req = expr->inside()->mReq.contentNeedContent;
-    MNN_ASSERT(inputs.size() == req.size());
-
-    for (int i=0; i<inputs.size(); ++i) {
-        if (!req[i]) {
-            continue;
+    std::stack<EXPRP> dfsStack;
+    std::set<EXPRP> visited;
+    dfsStack.push(expr);
+    while (!dfsStack.empty()) {
+        auto expr = dfsStack.top();
+        auto& inputs = expr->inputs();
+        auto& req = expr->inside()->mReq.contentNeedContent;
+        MNN_ASSERT(inputs.size() == req.size());
+        auto hasUnvisitInput = [&]() {
+            for (int i = 0; i < inputs.size(); ++i) {
+                if (!req[i]) {
+                    continue;
+                }
+                auto inputExpr = inputs[i]->expr();
+                auto unit = inputExpr.first->inside()->mUnit;
+                if (nullptr == unit) {
+                    continue;
+                }
+                auto inputCache = inputExpr.first->inside()->mCache;
+                if (nullptr != inputCache) {
+                    continue;
+                }
+                if (visited.find(inputExpr.first) != visited.end()) {
+                    continue;
+                }
+                return true;
+            }
+            return false;
+        };
+        // if no input or input has visit, do visit
+        if (!hasUnvisitInput()) {
+            auto visitFunc = [&]() {
+                visited.insert(expr);
+                auto unit = expr->inside()->mUnit;
+                if (nullptr == unit) {
+                    return;
+                }
+                dest.emplace_back(std::move(unit));
+                expr->inside()->mUnit = nullptr;
+            };
+            visitFunc();
+            dfsStack.pop();
+        } else {
+            for (int i = 0; i < inputs.size(); ++i) {
+                if (!req[i]) {
+                    continue;
+                }
+                auto inputExpr = inputs[i]->expr();
+                auto unit = inputExpr.first->inside()->mUnit;
+                if (nullptr == unit) {
+                    continue;
+                }
+                auto inputCache = inputExpr.first->inside()->mCache;
+                if (nullptr != inputCache) {
+                    continue;
+                }
+                dfsStack.push(inputExpr.first);
+            }
         }
-        auto inputExpr = inputs[i]->expr();
-        auto unit = inputExpr.first->inside()->mUnit;
-        if (nullptr == unit) {
-            continue;
-        }
-        auto inputCache = inputExpr.first->inside()->mCache;
-        if (nullptr != inputCache) {
-            continue;
-        }
-        _collectExecuteUnit(dest, inputExpr.first);
     }
-    auto unit = expr->inside()->mUnit;
-    if (nullptr == unit) {
-        return;
-    }
-    dest.emplace_back(std::move(unit));
-    expr->inside()->mUnit = nullptr;
 }
 
 void Executor::_create(const std::vector<EXPRP>& outputs, std::set<std::shared_ptr<Executor::ComputeCache>>&& inputCaches, std::set<std::shared_ptr<Expr::Inside>>&& inputNode, bool forceCPU) {
@@ -936,73 +1036,104 @@ void Executor::_create(const std::vector<EXPRP>& outputs, std::set<std::shared_p
 }
 
 void Executor::_visit(EXPRP expr, std::set<std::shared_ptr<Executor::ComputeCache>>& inputCaches, std::set<std::shared_ptr<Expr::Inside>>& inputNode) {
-    auto& inputs = expr->inputs();
-    auto& req = expr->inside()->mReq.contentNeedContent;
-    MNN_ASSERT(inputs.size() == req.size());
-
-    // Create Input's Unit / Cache
-    for (int i=0; i<inputs.size(); ++i) {
-        if (!req[i]) {
-            continue;
-        }
-        //MNN_PRINT("Use %d\n", i);
-        auto inputExpr = inputs[i]->expr();
-        if (nullptr != inputExpr.first->inside()->mUnit) {
-            continue;
-        }
-        auto inputCache = inputExpr.first->inside()->mCache;
-        if (nullptr != inputCache) {
-            inputCaches.insert(inputCache);
-            continue;
-        }
-        _visit(inputExpr.first, inputCaches, inputNode);
-    }
-
-    auto op = expr->get();
-    if (nullptr == op) {
-        return;
-    }
-    if (nullptr != expr->inside()->mUnit) {
-        return;
-    }
-    std::shared_ptr<Unit> unitP(new Unit);
-    Unit& unit = *unitP;
-    unit.op = expr->get();
-    unit.opStorage = expr->extra();
-    unit.inside = std::weak_ptr<Expr::Inside>(expr->inside());
-    unit.inputs.resize(inputs.size());
-    unit.outputs.resize(expr->inside()->mOutputTensors.size());
-    unit.outputContents.resize(unit.outputs.size());
-    for (int i=0; i<unit.outputs.size(); ++i) {
-        unit.outputContents[i].reset(new Tensor);
-        unit.outputs[i] = unit.outputContents[i].get();
-    }
-    for (int i=0; i<inputs.size(); ++i) {
-        auto inputExpr = inputs[i]->expr();
-        unit.inputs[i] = inputExpr.first->inside()->mOutputTensors[inputExpr.second];
-        if (!req[i]) {
-            // The compute don't need it
-            continue;
-        }
-        if (inputExpr.first->get() == nullptr) {
-            if (inputExpr.first->inputType() == VARP::INPUT) {
-                inputNode.insert(inputExpr.first->inside());
+    std::stack<EXPRP> dfsStack;
+    std::set<EXPRP> visited;
+    dfsStack.push(expr);
+    while (!dfsStack.empty()) {
+        auto expr = dfsStack.top();
+        auto& inputs = expr->inputs();
+        auto& req = expr->inside()->mReq.contentNeedContent;
+        MNN_ASSERT(inputs.size() == req.size());
+        auto hasUnvisitInput = [&]() {
+            for (int i = 0; i < inputs.size(); ++i) {
+                if (!req[i]) {
+                    continue;
+                }
+                auto inputExpr = inputs[i]->expr();
+                if (nullptr != inputExpr.first->inside()->mUnit) {
+                    continue;
+                }
+                auto inputCache = inputExpr.first->inside()->mCache;
+                if (nullptr != inputCache) {
+                    continue;
+                }
+                if (visited.find(inputExpr.first) != visited.end()) {
+                    continue;
+                }
+                return true;
             }
-            continue;
+            return false;
+        };
+        // if no input or input has visit, do visit
+        if (!hasUnvisitInput()) {
+            auto visitFunc = [&]() {
+                visited.insert(expr);
+                auto op = expr->get();
+                if (nullptr == op) {
+                    return;
+                }
+                if (nullptr != expr->inside()->mUnit) {
+                    return;
+                }
+                std::shared_ptr<Unit> unitP(new Unit);
+                Unit& unit = *unitP;
+                unit.op = expr->get();
+                unit.opStorage = expr->extra();
+                unit.inside = std::weak_ptr<Expr::Inside>(expr->inside());
+                unit.inputs.resize(inputs.size());
+                unit.outputs.resize(expr->inside()->mOutputTensors.size());
+                unit.outputContents.resize(unit.outputs.size());
+                for (int i=0; i<unit.outputs.size(); ++i) {
+                    unit.outputContents[i].reset(new Tensor);
+                    unit.outputs[i] = unit.outputContents[i].get();
+                }
+                for (int i=0; i<inputs.size(); ++i) {
+                    auto inputExpr = inputs[i]->expr();
+                    unit.inputs[i] = inputExpr.first->inside()->mOutputTensors[inputExpr.second];
+                    if (!req[i]) {
+                        // The compute don't need it
+                        continue;
+                    }
+                    if (inputExpr.first->get() == nullptr) {
+                        if (inputExpr.first->inputType() == VARP::INPUT) {
+                            inputNode.insert(inputExpr.first->inside());
+                        }
+                        continue;
+                    }
+                    auto inputUnit = inputExpr.first->inside()->mUnit;
+                    if (nullptr != inputUnit) {
+                        unit.inputs[i] = inputUnit->outputs[inputExpr.second];
+                        continue;
+                    }
+                    MNN_ASSERT(nullptr != inputExpr.first->inside()->mCache);
+                    inputCaches.insert(inputExpr.first->inside()->mCache);
+                    auto offset = inputExpr.second + inputExpr.first->inside()->mCacheOffset;
+                    unit.inputs[i] = inputExpr.first->inside()->mCache->mOutputs[offset];
+                }
+                MNN_ASSERT(expr->inside()->mUnit == nullptr);
+                //MNN_PRINT("Create %p, %s\n", expr.get(), EnumNameOpType(expr->get()->type()));
+                expr->inside()->mUnit = unitP;
+            };
+            visitFunc();
+            dfsStack.pop();
+        } else {
+            for (int i = 0; i < inputs.size(); ++i) {
+                if (!req[i]) {
+                    continue;
+                }
+                auto inputExpr = inputs[i]->expr();
+                if (nullptr != inputExpr.first->inside()->mUnit) {
+                    continue;
+                }
+                auto inputCache = inputExpr.first->inside()->mCache;
+                if (nullptr != inputCache) {
+                    inputCaches.insert(inputCache);
+                    continue;
+                }
+                dfsStack.push(inputExpr.first);
+            }
         }
-        auto inputUnit = inputExpr.first->inside()->mUnit;
-        if (nullptr != inputUnit) {
-            unit.inputs[i] = inputUnit->outputs[inputExpr.second];
-            continue;
-        }
-        MNN_ASSERT(nullptr != inputExpr.first->inside()->mCache);
-        inputCaches.insert(inputExpr.first->inside()->mCache);
-        auto offset = inputExpr.second + inputExpr.first->inside()->mCacheOffset;
-        unit.inputs[i] = inputExpr.first->inside()->mCache->mOutputs[offset];
     }
-    MNN_ASSERT(expr->inside()->mUnit == nullptr);
-    //MNN_PRINT("Create %p, %s\n", expr.get(), EnumNameOpType(expr->get()->type()));
-    expr->inside()->mUnit = unitP;
 }
 void Executor::_makeCache(const std::vector<EXPRP>& expr, bool forceCPU) {
     std::set<std::shared_ptr<Executor::ComputeCache>> inputCaches;

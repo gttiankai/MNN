@@ -8,6 +8,7 @@
 
 #include "IfModule.hpp"
 #include "MNN_generated.h"
+
 namespace MNN {
 namespace Express {
 static int _findPos(const std::vector<std::string>& names, const std::string& key) {
@@ -21,6 +22,8 @@ static int _findPos(const std::vector<std::string>& names, const std::string& ke
 std::vector<Express::VARP> IfModule::onForward(const std::vector<Express::VARP>& inputs) {
     std::vector<Express::VARP> outputs(mOutputFromElse.size());
     MNN_ASSERT(mOutputFromThen.size() == mOutputFromElse.size());
+
+
     if (inputs[0]->readMap<int>()[0] > 0) {
         std::vector<Express::VARP> subInputs(mInputForThen.size());
         for (auto& p : mInputForThen) {
@@ -42,8 +45,9 @@ std::vector<Express::VARP> IfModule::onForward(const std::vector<Express::VARP>&
     }
     return outputs;
 }
-IfModule* IfModule::create(const Op* op, const std::map<std::string, SubGraph>& subGraph) {
+IfModule* IfModule::create(const Op* op, const std::map<std::string, SubGraph>& subGraph, std::shared_ptr<Schedule::ScheduleInfo> sharedConst) {
     auto module = new IfModule;
+    module->mSharedConst = sharedConst;
     module->setType("IfModule");
     auto ifParam = op->main_as_IfParam();
     auto& thenG = subGraph.find(ifParam->then_graph()->str())->second;
@@ -53,12 +57,14 @@ IfModule* IfModule::create(const Op* op, const std::map<std::string, SubGraph>& 
     if (nullptr != op->name()) {
         module->setName(op->name()->str());
     }
+
+
     /** Compute map index
      std::vector<std::pair<int, int>> mInputForThen;
 
      // First mElse' index, Second: inputs's index
      std::vector<std::pair<int, int>> mInputForElse;
-         
+
      std::vector<int> mOutputFromThen;
      std::vector<int> mOutputFromElse;
      */
@@ -97,7 +103,7 @@ IfModule* IfModule::create(const Op* op, const std::map<std::string, SubGraph>& 
     for (int i=0; i<output->size(); ++i) {
         auto data = output->GetAs<StringVec>(i);
         MNN_ASSERT(data->data()->size() == 2);
-        
+
         auto thenPos = _findPos(thenG.outputs, data->data()->GetAsString(0)->str());
         MNN_ASSERT(thenPos >= 0);
         auto elsePos = _findPos(elseG.outputs, data->data()->GetAsString(1)->str());
@@ -115,6 +121,7 @@ Module* IfModule::clone(CloneContext* ctx) const {
     module->mOutputFromElse = mOutputFromElse;
     module->mThen.reset(mThen->clone(ctx));
     module->mElse.reset(mElse->clone(ctx));
+    module->mSharedConst = mSharedConst;
     return this->cloneBaseTo(ctx, module);
 }
 

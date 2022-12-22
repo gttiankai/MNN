@@ -128,6 +128,16 @@ ErrorCode Session::run() const {
         MNN_ERROR("Can't run session because not resized\n");
         return COMPUTE_SIZE_ERROR;
     }
+
+#ifdef LOG_VERBOSE
+    for (auto& iter : mInputs) {
+        auto& inputTensor = iter.second;
+        MNN_PRINT("before run, input name:%s, ptr:%p, shape:", iter.first.c_str(), inputTensor);
+        inputTensor->printShape();
+        MNN_PRINT("\n");
+    }
+#endif
+
     for (auto& iter : mPipelines) {
         auto error = iter->execute();
         if (NO_ERROR != error) {
@@ -163,6 +173,15 @@ void Session::_clearCache() {
 }
 
 ErrorCode Session::resize(bool isStatic) {
+
+#ifdef LOG_VERBOSE
+    for (auto& iter : mInputs) {
+        auto& inputTensor = iter.second;
+        MNN_PRINT("before resize, input name:%s, ptr:%p, hostPtr:%p,  shape:", iter.first.c_str(), inputTensor, inputTensor->host<void>());
+        inputTensor->printShape();
+        MNN_PRINT("\n");
+    }
+#endif
     bool firstMalloc = false;
     if (mNeedResize) {
         if (!isStatic) {
@@ -183,7 +202,7 @@ ErrorCode Session::resize(bool isStatic) {
         // Set needResize = true for easy for judge in runSession when error
         mNeedResize = true;
         // Turn Pipeline to Command Buffer and Malloc resource
-        // TODO: Seperate Schedule and Malloc
+        // TODO: Separate Schedule and Malloc
         for (auto& iter : mPipelines) {
             auto error = iter->allocMemory(firstMalloc);
             if (NO_ERROR != error) {
@@ -196,6 +215,16 @@ ErrorCode Session::resize(bool isStatic) {
         mNeedMalloc = false;
         mNeedResize = false;
     }
+
+#ifdef LOG_VERBOSE
+    MNN_PRINT("session after resize\n");
+    for (auto& iter : mOutputs) {
+        auto& outputTensor = iter.second;
+        MNN_PRINT("output name:%s, ptr:%p,shape:", iter.first.c_str(), outputTensor);
+        outputTensor->printShape();
+        MNN_PRINT("\n");
+    }
+#endif
     return NO_ERROR;
 }
 bool Session::getInfo(Interpreter::SessionInfoCode code, void* ptr) const {
@@ -228,6 +257,16 @@ bool Session::getInfo(Interpreter::SessionInfoCode code, void* ptr) const {
             auto dst     = (float*)ptr;
             *dst = flo;
             return true;
+        } break;
+        case Interpreter::RESIZE_STATUS: {
+            auto dst = (int*)ptr;
+            if (mNeedResize) {
+                *dst = 2;
+            } else if (mNeedMalloc) {
+                *dst = 1;
+            } else {
+                *dst = 0;
+            }
         } break;
         // TODO: Support other debug info
         default:

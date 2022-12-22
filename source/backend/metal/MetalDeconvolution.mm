@@ -134,6 +134,8 @@ MetalDeconvolution::MetalDeconvolution(Backend *backend, const MNN::Op *op) : Ex
     mStrideY     = common->strideY();
     mDilateX     = common->dilateX();
     mDilateY     = common->dilateY();
+    mActivationType = common->relu() ? 1 : (common->relu6() ? 2 : 0);
+
     // forcy downgrade to float like what CPU does
     std::shared_ptr<ConvolutionCommon::Int8Common> qnt = NULL;
     if (deconv->quanParameter()) {
@@ -187,7 +189,8 @@ ErrorCode MetalDeconvolution::onResize(const std::vector<Tensor *> &inputs, cons
         deltaKy * mDilateY / mStrideY,
         deltaKx * mDilateX / mStrideX,
         mBias.length > 0,
-        ob
+        ob,
+        mActivationType
     };
     mConstBuffer = [context newDeviceBuffer:sizeof(consts) bytes:consts access:CPUWriteOnly];
     
@@ -228,7 +231,7 @@ ErrorCode MetalDeconvolution::onExecute(const std::vector<Tensor *> &inputs, con
 
 class MetalDeconvolutionCreator : public MetalBackend::Creator {
 public:
-    virtual Execution *onCreate(const std::vector<Tensor *> &inputs, const MNN::Op *op, Backend *backend) const {
+    virtual Execution *onCreate(const std::vector<Tensor *> &inputs, const MNN::Op *op, Backend *backend, const std::vector<Tensor *>& outputs) const {
         if (inputs.size() > 1) {
             MNN_PRINT("multi input deconv for metal not supoort!\n");
             return nullptr;

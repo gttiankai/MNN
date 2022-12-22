@@ -192,7 +192,7 @@ static int test_main(int argc, const char* argv[]) {
     // create net
     MNN_PRINT("Open Model %s\n", fileName);
     std::shared_ptr<MNN::Interpreter> net =
-        std::shared_ptr<MNN::Interpreter>(MNN::Interpreter::createFromFile(fileName));
+        std::shared_ptr<MNN::Interpreter>(MNN::Interpreter::createFromFile(fileName), MNN::Interpreter::destroy);
     if (nullptr == net) {
         return 0;
     }
@@ -235,6 +235,12 @@ static int test_main(int argc, const char* argv[]) {
             //Set when size is changed, After resizeSession
         }
     }
+    int resizeStatus = 0;
+    net->getSessionInfo(session, MNN::Interpreter::RESIZE_STATUS, &resizeStatus);
+    if (resizeStatus != 0) {
+        MNN_ERROR("Resize error, can't execute MNN\n");
+        return 0;
+    }
 
     float memoryUsage = 0.0f;
     net->getSessionInfo(session, MNN::Interpreter::MEMORY, &memoryUsage);
@@ -243,6 +249,7 @@ static int test_main(int argc, const char* argv[]) {
     int backendType[2];
     net->getSessionInfo(session, MNN::Interpreter::BACKENDS, backendType);
     MNN_PRINT("Session Info: memory use %f MB, flops is %f M, backendType is %d\n", memoryUsage, flops, backendType[0]);
+    // Set Other Inputs to Zero
     auto allInput = net->getSessionInputAll(session);
     for (auto& iter : allInput) {
         auto inputTensor = iter.second;
@@ -397,6 +404,8 @@ static int test_main(int argc, const char* argv[]) {
         auto outputFile = pwd + "output.txt";
         if (outputTensor->size() > 0) {
             dumpTensor2File(&expectTensor, outputFile.c_str(), orderFileOs);
+        } else {
+            MNN_ERROR("output size is 0, can't save\n");
         }
     }
     auto allOutputs = net->getSessionOutputAll(session);
@@ -442,6 +451,12 @@ static int test_main(int argc, const char* argv[]) {
 
         if (t > 0) {
 
+            for (int i = 0; i < 3; ++i) { // warmup
+                inputTensor->copyFromHostTensor(&givenTensor);
+                net->runSessionWithCallBackInfo(session, beforeCallBack, afterCallBack, false);
+                outputTensor->copyToHostTensor(&expectTensor);
+            }
+
             std::vector<float> times(t, 0.0f);
             for (int i = 0; i < t; ++i) {
                 auto begin = getTimeInUs();
@@ -467,12 +482,19 @@ static int test_main(int argc, const char* argv[]) {
             }
 
             std::sort(allOpsTimes.begin(), allOpsTimes.end());
+            float opSum = 0;
             for (auto& iter : allOpsTimes) {
-                MNN_PRINT("%*s \t[%s] run %d average cost %f ms, %.3f %%, FlopsRate: %.3f %%\n", 50, iter.second.first.c_str(), opTypes[iter.second.first].c_str(),
-                          runTime, iter.first / (float)runTime, iter.first / sum * 100.0f,
-                          iter.second.second / sumFlops * 100.0f);
+                opSum += iter.first;
+                MNN_PRINT("%*s \t[%s] run %d average cost %f ms, %.3f %%, FlopsRate: %.3f %%\n", 50,
+                    iter.second.first.c_str(),
+                    opTypes[iter.second.first].c_str(),
+                    runTime,
+                    iter.first / (float)runTime,
+                    iter.first / sum * 100.0f,
+                    iter.second.second / sumFlops * 100.0f);
             }
-            MNN_PRINT("Avg= %f ms, min= %f ms, max= %f ms\n", sum / (float)t, *minTime, *maxTime);
+            opSum = opSum / runTime;
+            MNN_PRINT("Avg= %f ms, OpSum = %f ms min= %f ms, max= %f ms\n", sum / (float)t, opSum, *minTime, *maxTime);
         }
     }
     net->updateCacheFile(session);

@@ -21,21 +21,43 @@ public:
             return false;
         }
         auto axis = flatten->axis();
+        auto endAxis = flatten->endAxis();
         auto dim = inputs[0]->dimensions();
         if (axis < 0) {
             axis += dim;
         }
+        if (endAxis < 0) {
+            endAxis += dim;
+        }
         int inside = 1;
+        int middle = 1;
         int outside = 1;
-        for (int i=0; i<axis; ++i) {
-            outside *= inputs[0]->length(i);
+        if (endAxis == 0) {
+            for (int i=0; i<axis; ++i) {
+                outside *= inputs[0]->length(i);
+            }
+            for (int i=axis; i<dim; ++i) {
+                inside *= inputs[0]->length(i);
+            }
+            outputs[0]->buffer().dimensions = 2;
+            outputs[0]->setLength(0, outside);
+            outputs[0]->setLength(1, inside);
+        } else {
+            // [ 0 - axis, 1, endAxis - lastDim]
+            outputs[0]->buffer().dimensions = dim - endAxis + axis;
+            for (int i = 0; i < axis; ++i) {
+                outputs[0]->setLength(i, inputs[0]->length(i));
+            }
+            for (int i = axis; i <= endAxis; ++i) {
+                outside *= inputs[0]->length(i);
+            }
+            outputs[0]->setLength(axis, outside);
+            if (dim > endAxis + 1) {
+                for (int i = endAxis + 1; i < dim; ++i) {
+                    outputs[0]->setLength(i, inputs[0]->length(i));
+                }
+            }
         }
-        for (int i=axis; i<dim; ++i) {
-            inside *= inputs[0]->length(i);
-        }
-        outputs[0]->buffer().dimensions = 2;
-        outputs[0]->setLength(0, outside);
-        outputs[0]->setLength(1, inside);
         outputs[0]->buffer().type = inputs[0]->getType();
         TensorUtils::getDescribe(outputs[0])->dimensionFormat = TensorUtils::getDescribe(inputs[0])->dimensionFormat;
         return true;
@@ -74,7 +96,7 @@ public:
         } else {
             // shape which is getted at the runtime
             auto inputShape = inputs[1];
-            // For the modle convert from tensorflow, the format is NHWC, otherwise NCHW
+            // For the model convert from tensorflow, the format is NHWC, otherwise NCHW
             fromTf          = TensorUtils::getDescribe(inputShape)->dimensionFormat == MNN_DATA_FORMAT_NHWC;
             dimSize         = inputShape->elementSize();
             auto dim = inputShape->host<int32_t>();
@@ -100,9 +122,7 @@ public:
         int totalSizeInput  = 1;
         for (int i = 0; i < input->buffer().dimensions; ++i) {
             auto l = input->length(i);
-            if (l != 0) {
-                totalSizeInput *= l;
-            }
+            totalSizeInput *= l;
         }
 
         int determinAxis = -1;
@@ -125,12 +145,10 @@ public:
         }
         int totalSizeOutput = 1;
         for (int i = 0; i < dimSize; ++i) {
-            if (output->buffer().dim[i].extent != 0) {
-                totalSizeOutput *= output->buffer().dim[i].extent;
-            }
+            totalSizeOutput *= output->buffer().dim[i].extent;
         }
         if (determinAxis >= 0) {
-            output->buffer().dim[determinAxis].extent = totalSizeInput / totalSizeOutput;
+            output->buffer().dim[determinAxis].extent = totalSizeOutput ? totalSizeInput / totalSizeOutput : 0;
             totalSizeOutput *= output->buffer().dim[determinAxis].extent;
         }
         if (totalSizeInput != totalSizeOutput) {

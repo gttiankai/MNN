@@ -21,9 +21,9 @@ public:
         auto input0     = inputs[0];
         auto input1     = inputs[1];
         auto output     = outputs[0];
-        auto inputL0    = input0->elementSize();
-        auto inputL1    = input1->elementSize();
-        auto outputSize = output->elementSize();
+        auto inputL0    = TensorUtils::getRawSize(input0);
+        auto inputL1    = TensorUtils::getRawSize(input1);
+        auto outputSize = TensorUtils::getRawSize(output);
         auto inp0format = TensorUtils::getDescribe(inputs[0])->dimensionFormat;
         auto inp1format = TensorUtils::getDescribe(inputs[1])->dimensionFormat;
         auto outFormat  = TensorUtils::getDescribe(output)->dimensionFormat;
@@ -92,9 +92,9 @@ public:
         auto input0     = inputs[0];
         auto input1     = inputs[1];
         auto output     = outputs[0];
-        auto inputL0    = input0->elementSize();
-        auto inputL1    = input1->elementSize();
-        auto outputSize = output->elementSize();
+        auto inputL0    = TensorUtils::getRawSize(input0);
+        auto inputL1    = TensorUtils::getRawSize(input1);
+        auto outputSize = TensorUtils::getRawSize(output);
         auto inp0format = TensorUtils::getDescribe(inputs[0])->dimensionFormat;
         auto inp1format = TensorUtils::getDescribe(inputs[1])->dimensionFormat;
         auto outFormat  = TensorUtils::getDescribe(output)->dimensionFormat;
@@ -123,7 +123,7 @@ public:
             input1Broadcast = true;
         }
         if (input0Broadcast || input1Broadcast) {
-            if ((context.forwardType() == MNN_FORWARD_CPU || context.forwardType() == MNN_FORWARD_CUDA || context.forwardType() == MNN_FORWARD_CPU_EXTENSION) && inp0format == outFormat && inp1format == outFormat && outFormat != MNN_DATA_FORMAT_NC4HW4 && input0->getType().code == halide_type_float) {
+            if ((context.forwardType() == MNN_FORWARD_CPU || context.forwardType() == MNN_FORWARD_CUDA || context.forwardType() == MNN_FORWARD_CPU_EXTENSION) && inp0format == outFormat && inp1format == outFormat && outFormat != MNN_DATA_FORMAT_NC4HW4 && input0->getType().code == halide_type_float && op->main_as_BinaryOp()->activationType() == 0) {
                 if (!(input0Broadcast && input1Broadcast)) {
 //                if (false) {
                     // Use Loop instead of broadcast
@@ -153,6 +153,7 @@ public:
                     auto stepOffset = builder.CreateVector(std::vector<int>{0, 0, 0});
                     auto indexesOffset = builder.CreateVector(std::vector<int>{2, 0, 1});
                     std::vector<flatbuffers::Offset<RegionCommand>> regionCommands;
+
                     for (int i=0; i<des->regions.size(); ++i) {
                         auto& reg = des->regions[i];
                         auto sizeOffset = builder.CreateVector(reg.size, 3);

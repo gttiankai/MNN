@@ -116,6 +116,9 @@ Variable::Info* Expr::outputInfo(int index) const {
 void Expr::_addLinkForInputs(EXPRP expr) {
     auto inputs = expr->inputs();
     for (int i=0; i<inputs.size(); ++i) {
+        if (inputs[i].get() == nullptr) {
+            continue;
+        }
         bool findEmpty = false;
         auto inputExpr = inputs[i]->mFrom;
         for (int j=0; j<inputExpr->mTo.size(); ++j) {
@@ -290,6 +293,10 @@ bool Expr::requireInfo() {
     }
     for (int i = 0; i < mInputs.size(); ++i) {
         auto& v  = mInputs[i];
+        if (v->getInfo()->size == 0) {
+            // zero shape
+            continue;
+        }
         if (mInside->mReq.shapeNeedContent[i]) {
             // For shape need content, the content must not be nullptr
             auto ptr = v->readInternal(true);
@@ -331,6 +338,9 @@ VARP Variable::create(EXPRP expr, int index) {
 #endif
     }
 #endif
+    if (!ExecutorScope::Current()->lazyEval) {
+        res.fix(VARP::CONSTANT);
+    }
     return res;
 }
 void Expr::replace(EXPRP old, EXPRP from) {
@@ -338,6 +348,9 @@ void Expr::replace(EXPRP old, EXPRP from) {
         return;
     }
     for (auto input : old->inputs()) {
+        if (input.get() == nullptr) {
+            continue;
+        }
         for (int j=0; j<input->mFrom->mTo.size(); ++j) {
             auto ref = input->mFrom->mTo[j].lock();
             if (ref.get() == old.get()) {
@@ -346,6 +359,9 @@ void Expr::replace(EXPRP old, EXPRP from) {
         }
     }
     for (auto input : from->inputs()) {
+        if (input.get() == nullptr) {
+            continue;
+        }
         bool hasSet = false;
         for (int j=0; j<input->mFrom->mTo.size(); ++j) {
             auto ref = input->mFrom->mTo[j].lock();
@@ -567,6 +583,9 @@ void Expr::visit(EXPRP expr, const std::function<bool(EXPRP)>& before, const std
         return;
     }
     for (int i = 0; i < expr->inputs().size(); ++i) {
+        if (expr->inputs()[i].get() == nullptr) {
+            continue;
+        }
         visit(expr->inputs()[i]->mFrom, before, after);
     }
     after(expr);
@@ -585,7 +604,7 @@ void* Variable::readInternal(bool forShape) {
         auto des = TensorUtils::getDescribe(originTensor);
         if (WrapExecution::needWrap(originTensor, nullptr) || (des->quantAttr != nullptr && des->type == DataType_DT_INT8)) {
             // For StaticModule will other-device runtime, we may create Variable with other-device's memory
-            // The case won't occured for varibale = INPUT
+            // The case won't occurred for varibale = INPUT
             // Need Copy
             if (nullptr != inside->mHostTensor) {
                 // The Varp will not be created as input, so we just need copy once
@@ -618,6 +637,7 @@ void* Variable::readInternal(bool forShape) {
     }
     return Executor::mapOutput(cache.get(), mFrom->mInside->mCacheOffset + mFromIndex, mFrom->mInside->mOutputTensors[mFromIndex]);
 }
+
 
 void Variable::informDirty() {
     std::vector<Expr*> visited;
@@ -721,6 +741,9 @@ void Expr::visitOutputs(const std::function<bool(EXPRP, int)>& visit) {
         bool recurse = false;
         auto inputs = expr->inputs();
         for (int i=0; i<inputs.size(); ++i) {
+            if (inputs[i].get() == nullptr) {
+                continue;
+            }
             if (inputs[i]->mFrom.get() == this) {
                 recurse = recurse || visit(expr, i);
             }
@@ -812,7 +835,8 @@ std::vector<VARP> Variable::load(const uint8_t* buffer, size_t length) {
         for (int index = 0; index < op->outputIndexes.size(); ++index) {
             auto outputIndex = op->outputIndexes[index];
             if (variableMap.find(outputIndex) == variableMap.end()) {
-                auto newVariable = Variable::create(expr, index);
+                // just create VARP and don't compute
+                VARP newVariable(new Variable(expr, index));
                 if (source->tensorName.size() > outputIndex) {
                     newVariable->setName(source->tensorName[outputIndex]);
                 }
@@ -921,9 +945,15 @@ void Variable::save(const std::vector<VARP>& vars, NetT* dest) {
                 op->main.AsInput()->dformat = (MNN_DATA_FORMAT)Utils::convertFormat(info.order);
             }
         }
-        op->name = expr->name();
+        if (!expr->name().empty()) {
+            op->name = expr->name();
+        }
         op->inputIndexes.resize(expr->inputs().size());
         for (int i = 0; i < op->inputIndexes.size(); ++i) {
+            if (expr->inputs()[i] == nullptr) {
+                op->inputIndexes[i] = -1;
+                continue;
+            }
             auto inputExpr = expr->inputs()[i]->expr();
             op->inputIndexes[i] = varIndexInfo[inputExpr.first] + inputExpr.second;
         }
@@ -955,7 +985,21 @@ void Variable::save(const std::vector<VARP>& vars, NetT* dest) {
             }
         }
     }
+    // add version number
+    dest->extraInfo.reset(new ExtraInfoT);
+    dest->extraInfo->version = MNN_VERSION;
 }
+std::vector<int8_t> Variable::save(const std::vector<VARP>& vars) {
+    std::unique_ptr<NetT> net(new NetT);
+    save(vars, net.get());
+    flatbuffers::FlatBufferBuilder builder(1024);
+    auto offset = Net::Pack(builder, net.get());
+    builder.Finish(offset);
+    std::vector<int8_t> result(builder.GetSize());
+    ::memcpy(result.data(), builder.GetBufferPointer(), builder.GetSize());
+    return result;
+}
+
 void Variable::save(const std::vector<VARP>& vars, const char* fileName) {
     std::unique_ptr<NetT> net(new NetT);
     save(vars, net.get());

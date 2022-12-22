@@ -62,6 +62,9 @@ void removeUselessOps(Block* block) {
             it->kind() == prim::NumToTensor ||
             it->kind() == aten::ScalarImplicit ||
             it->kind() == aten::contiguous ||
+            it->kind() == aten::dropout ||
+            it->kind() == aten::dropout_ ||
+            it->kind() == aten::feature_dropout ||
             it->kind() == aten::clone) {
             it->output()->replaceAllUsesWith(it->input(0));
             for (int i = it->inputs().size()-1; i >= 0; i--) {
@@ -152,6 +155,37 @@ void removeListAppend(Graph* graph, Block* block) {
     }
 }
 /*
+   We remove all ListConstruct op with only one input and not used by aten::cat, like below:
+        %116 : Tensor?[] = prim::ListConstruct(%115)
+        %alpha0.1 : Tensor = aten::index_put_(%alpha.1, %116, %x.1, %16)
+   ListConstruct used by aten::cat will be reserved like below:
+        %features.2 : Tensor[] = prim::ListConstruct(%input3.4)
+        %concated_features.380 : Tensor = aten::cat(%features.2, %5)
+   Attention: Runing this pass after removeListAppend
+ */
+void removeListConstructOps(Block* block) {
+    for (auto it = block->nodes().begin(), end = block->nodes().end(); it != end; ++it) {
+        for (auto b : it->blocks()) {
+            removeUselessOps(b);
+        }
+        if (it->kind() == prim::ListConstruct && it->inputs().size() == 1) {
+            bool remove = true;
+            for (auto use : it->output()->uses()) {
+                if (use.user->kind() == aten::cat) {
+                    remove = false;
+                    break;
+                }
+            }
+            if (remove) {
+                it->output()->replaceAllUsesWith(it->input(0));
+                it->removeInput(0);
+                it.destroyCurrent();
+            }
+        }
+    }
+}
+
+/*
    We rewrite something like:
         y = chunk(x)
         v1, v2, v3 = ListUnpack(y)
@@ -191,6 +225,38 @@ void FuseListUnpack(Block* block) {
                 it->eraseOutput(0);
                 listunpack->replaceAllUsesWith(*it);
                 listunpack->destroy();
+            }
+        }
+    }
+}
+/*
+   We rewrite something like:
+        x = ListConstruct(v1, v2, v3)
+        y = stack(y, axis)
+   to:
+        y = stack(v1, v2, v3, axis)
+*/
+void FuseListStack(Block* block) {
+    for (auto it = block->nodes().begin(); it != block->nodes().end();) {
+        auto* node = *it;
+        it++;
+
+        for (Block* sub_block : node->blocks()) {
+            FuseListUnpack(sub_block);
+        }
+        std::set<NodeKind> fusekind = {
+            aten::stack
+        };
+        if (it->kind() == aten::stack) {
+            auto input = it->input(0)->node();
+            if (input->kind() == prim::ListConstruct) {
+                auto axis = it->input(1);
+                it->removeAllInputs();
+                for (int i = 0; i < input->inputs().size(); i++) {
+                    it->addInput(input->input(i));
+                }
+                it->addInput(axis);
+                input->destroy();
             }
         }
     }
@@ -368,11 +434,18 @@ void overloadDistinguish(Block* block) {
             // min/max(Tensor, int) is reduce
             case aten::min:
             case aten::max:
+            case aten::sum:
                 if (node->inputs().size() > 1 &&
-                    node->input(1)->type()->kind() == c10::TypeKind::IntType) {
+                    (node->input(1)->type()->kind() == c10::TypeKind::IntType ||
+                     node->input(1)->type()->kind() == c10::TypeKind::ListType)) {
                     node->s_(symb, "reduce");
                 } else {
-                    node->s_(symb, "compare");
+                    node->s_(symb, "binary");
+                }
+                break;
+            case aten::index:
+                if (node->input(1)->node()->kind() == prim::ListConstruct) {
+                    node->s_(symb, "stridedslice");
                 }
                 break;
             default:
@@ -409,6 +482,29 @@ void FuseAsTensor(Graph* graph, Block* block) {
     }
 }
 
+/*
+fuse uniform, such as below:
+    d = aten::empty(shape);
+    c = aten::uniform_(a, low, hight);
+ -> c = aten::uniform_(shape, low, hight)
+*/
+void FuseUniform(Graph* graph, Block* block) {
+    for (auto it = block->nodes().begin(); it != block->nodes().end();) {
+        auto* node = *it;
+        it++;
+        for (Block* sub_block : node->blocks()) {
+            FuseUniform(graph, sub_block);
+        }
+        if (it->kind().toUnqualString() == std::string("uniform_")) {
+            auto input = it->input(0)->node();
+            if (input->kind() == aten::empty) {
+                it->replaceInput(0, input->input(0));
+                input->destroy();
+            }
+        }
+    }
+}
+
 std::shared_ptr<Graph> torchOptPass(Module& module) {
     module.eval();
     module = torch::jit::freeze_module(module);
@@ -424,6 +520,7 @@ std::shared_ptr<Graph> torchOptPass(Module& module) {
     // Example: x = {v0}; x.append(v1); -> x = {v0, v1};
     // RemoveListMutation(graph);
     removeListAppend(graph.get(), graph->block());
+    removeListConstructOps(graph->block());
     //RemoveTensorMutation(graph);
     // elimate dead code
     EliminateDeadCode(graph, DCESideEffectPolicy::ALLOW_DELETING_NODES_WITH_SIDE_EFFECTS);
@@ -436,6 +533,7 @@ std::shared_ptr<Graph> torchOptPass(Module& module) {
     FuseAddMM(graph);
     // FoldConvBatchNorm(module);
     FuseListUnpack(graph->block());
+    FuseListStack(graph->block());
     // distinguish overload function
     overloadDistinguish(graph->block());
     // legal loop body's var name
@@ -446,6 +544,8 @@ std::shared_ptr<Graph> torchOptPass(Module& module) {
     OutputsUnpack(graph.get());
     // dtype + as_tensor -> type_as
     FuseAsTensor(graph.get(), graph->block());
+    // empty + uniform -> uniform
+    FuseUniform(graph.get(), graph->block());
 #ifdef MNN_DUMP_TORCHSCRIPT
     graph->dump();
 #endif

@@ -22,7 +22,7 @@ public:
           benchmarkModel(false),
           saveHalfFloat(false){
     }
-    enum MODEL_SOURCE { TENSORFLOW = 0, CAFFE, ONNX, MNN, TFLITE, TORCH, MAX_SOURCE };
+    enum MODEL_SOURCE { TENSORFLOW = 0, CAFFE, ONNX, MNN, TFLITE, TORCH, JSON, MAX_SOURCE };
 
     // MNN model path
     std::string MNNModel;
@@ -50,8 +50,14 @@ public:
     int defaultBatchSize = 0;
     int optimizeLevel = 1;
     bool keepInputFormat = false;
+    bool alignDenormalizedValue = true;
+    bool detectSparseSpeedUp = true;
     std::string customOpLibs = "";
     std::string authCode = "";
+    std::string testDir = "";
+    float testThredhold = 0.01;
+    bool mnn2json = false;
+    bool dumpInfo = false;
 };
 
 #endif // CONFIG_HPP

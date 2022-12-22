@@ -11,7 +11,7 @@
 #include <mutex>
 #include "core/Macro.h"
 #include "core/TensorUtils.hpp"
-//#define MNN_DEBUG_TENSOR_SIZE
+// #define MNN_DEBUG_TENSOR_SIZE
 namespace MNN {
 void registerShapeOps();
 SizeComputerSuite* SizeComputerSuite::gInstance = nullptr;
@@ -99,15 +99,16 @@ bool SizeComputer::computeOutputSize(const MNN::Op* op, const std::vector<Tensor
         if (nullptr != computer) {
             bool ret = computer->onComputeSize(op, inputs, outputs);
 #ifdef MNN_DEBUG_TENSOR_SIZE
+
             if (op->name() != nullptr) {
-                MNN_PRINT("\t===> compute shape: %s, [%s]\n", op->name()->c_str(), MNN::EnumNameOpType(op->type()));
+                MNN_PRINT("===> compute shape: %s, [%s]\n", op->name()->c_str(), MNN::EnumNameOpType(op->type()));
             } else {
-                MNN_PRINT("\t===> compute shape:[%s]\n", MNN::EnumNameOpType(op->type()));
+                MNN_PRINT("===> compute shape:[%s]\n", MNN::EnumNameOpType(op->type()));
             }
             if (inputs.size()) {
-                MNN_PRINT("Inputs:\n");
+                MNN_PRINT("\tInputs:\n");
                 for (auto o : inputs) {
-                    MNN_PRINT("\tformat=%d\t", TensorUtils::getDescribe(o)->dimensionFormat);
+                    MNN_PRINT("\tptr=%p, format=%s, datatype=%d;\t", o, EnumNameMNN_DATA_FORMAT(TensorUtils::getDescribe(o)->dimensionFormat), o->getType().code);
                     if (o->dimensions() == 0) {
                         MNN_PRINT("\t*Scalar*");
                     }
@@ -117,9 +118,9 @@ bool SizeComputer::computeOutputSize(const MNN::Op* op, const std::vector<Tensor
                     MNN_PRINT("\n");
                 }
             }
-            MNN_PRINT("Outputs:\n");
+            MNN_PRINT("\tOutputs:\n");
             for (auto o : outputs) {
-                MNN_PRINT("\tformat=%d\t", TensorUtils::getDescribe(o)->dimensionFormat);
+                MNN_PRINT("\tptr=:%p, format=%s, datatype=%d;\t",o, EnumNameMNN_DATA_FORMAT(TensorUtils::getDescribe(o)->dimensionFormat), o->getType().code);
                 if (o->dimensions() == 0) {
                     MNN_PRINT("\t*Scalar*");
                 }
@@ -128,23 +129,26 @@ bool SizeComputer::computeOutputSize(const MNN::Op* op, const std::vector<Tensor
                 }
                 MNN_PRINT("\n");
             }
+// }
+
 #endif
             return ret;
         }
     }
 
     // Default Set to the same
-    if (inputs.size() >= 1 && outputs.size() == 1) {
+    if (inputs.size() >= 1 && (outputs.size() == 1 || outputs.size() == inputs.size())) {
         if (inputs[0] == outputs[0]) {
             return true;
         }
-        const auto& ib = inputs[0]->buffer();
-        auto& ob       = outputs[0]->buffer();
-        memcpy(ob.dim, ib.dim, sizeof(halide_dimension_t) * ib.dimensions);
-        ob.dimensions                                         = ib.dimensions;
-        ob.type                                               = ib.type;
-        TensorUtils::getDescribe(outputs[0])->dimensionFormat = TensorUtils::getDescribe(inputs[0])->dimensionFormat;
-
+        for (int i=0; i<outputs.size(); ++i) {
+            const auto& ib = inputs[i]->buffer();
+            auto& ob       = outputs[i]->buffer();
+            memcpy(ob.dim, ib.dim, sizeof(halide_dimension_t) * ib.dimensions);
+            ob.dimensions                                         = ib.dimensions;
+            ob.type                                               = ib.type;
+            TensorUtils::getDescribe(outputs[i])->dimensionFormat = TensorUtils::getDescribe(inputs[i])->dimensionFormat;
+        }
         return true;
     }
     // Not Support

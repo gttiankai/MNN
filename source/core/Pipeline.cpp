@@ -285,6 +285,17 @@ ErrorCode Pipeline::encode(bool isStatic, bool supportDebug) {
             }
         }
     }
+#ifndef MNN_BUILD_MINI
+    else {
+        for (auto& info : mInfo) {
+            auto& buffer = info.executeBuffer;
+            for (auto& cmdP : buffer.command) {
+                mFlops += SizeComputer::computeFlops(cmdP->op, cmdP->inputs, cmdP->outputs);
+            }
+        }
+    }
+#endif
+
     return NO_ERROR;
 }
 
@@ -302,9 +313,11 @@ void Pipeline::_pushTuningTask(std::vector<Schedule::PipelineInfo>&& initInfos) 
             iterP->outputs = iter.outputs;
             iterP->op = iter.op;
             iterP->buffer = iter.buffer;
+#ifndef MNN_BUILD_MINI
             if (iter.op->type() == OpType_Raster) {
                 iterP->buffer = mContext.mRasterOp;
             }
+#endif
             auto copyTensor = [&](std::vector<Tensor*>& tensors) {
                 for (int v=0; v<tensors.size(); ++v) {
                     auto t = tensors[v];
@@ -415,7 +428,59 @@ void Pipeline::_recycleDynamicMemory(Command* command) {
     }
 }
 
+void _reorderOpCommandList(Tensor* reuseTensor, Tensor* replacedTensor, std::vector<SharedPtr<Command>>::iterator& cmdIterP, std::vector<Schedule::PipelineInfo>& info) {
+    for (auto& skipInfo : info) {
+        auto& skipBuffer = skipInfo.executeBuffer;
+        for (auto& skipComandP : skipBuffer.command) {
+
+            auto& skipComand = *skipComandP;
+            // MNN_PRINT("search skip command, optype:%s, name:%s, input0:%p\n",
+                        // EnumNameOpType(skipComand.op->type()), skipComand.info->name().c_str(), skipComand.inputs[0]);
+            if (skipComandP.get() == cmdIterP->get()) {
+                continue;
+            }
+            bool isSkipRaster = skipComand.op->type() == OpType_Raster;
+            for (int iInput = 0; iInput < skipComand.inputs.size(); ++iInput) {
+
+                auto iTensor = skipComand.inputs[iInput];
+                if (iTensor == replacedTensor) {
+                    // MNN_PRINT("input, inside skipExecution optype:%s, name:%s, replace input:%p, with:%p\n",
+                    //     EnumNameOpType(skipComand.op->type()), skipComand.info->name().c_str(), iTensor, reuseTensor);
+
+                    skipComand.inputs[iInput] = reuseTensor;
+                    TensorUtils::getDescribe(reuseTensor)->useCount++;
+                } else if (isSkipRaster) {
+                    auto des = TensorUtils::getDescribe(iTensor);
+                    for (int ir = 0; ir < des->regions.size(); ++ir) {
+                        auto origin     = des->regions[ir].origin;
+                        if (origin == replacedTensor) {
+                            des->regions[ir].origin = reuseTensor;
+                            TensorUtils::getDescribe(reuseTensor)->useCount++;
+                            // MNN_PRINT("input, inside skipExecution optype:%s, name:%s, replace input:%p, raster region:%p, with:%p\n",
+                            //     EnumNameOpType(skipComand.op->type()), skipComand.info->name().c_str(), iTensor, origin, reuseTensor);
+                        }
+                    }
+                }
+            }
+
+            if (isSkipRaster) {
+                for (int iOputput = 0; iOputput < skipComand.outputs.size(); ++iOputput) {
+                    if (skipComand.outputs[iOputput] == replacedTensor) {
+                        // MNN_PRINT("output, inside skipExecution optype:%s, name:%s, replace raster output:%p, with:%p\n",
+                        // EnumNameOpType(skipComand.op->type()), skipComand.info->name().c_str(), skipComand.outputs[iOputput], reuseTensor);
+                        skipComand.outputs[iOputput] = reuseTensor;
+                        TensorUtils::getDescribe(reuseTensor)->useCount++;
+                    }
+                }
+            }
+        }
+    }
+    return;
+}
+
+
 ErrorCode Pipeline::allocMemory(bool firstMalloc) {
+    // MNN_PRINT("allocMemory mtype:%d, cpubackendType:%d, cpuBackend runtime:%p\n", mBackend->type(), mBackupBackend->type(), mBackupBackend->getRuntime());
     if (!firstMalloc) {
         // For session setNeedMalloc, if session's output is set as some input, It may cause error
         // Dup des to avoid it
@@ -444,11 +509,14 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc) {
             }
         }
     }
+    int maxLayerUsage = 0;
     // Compute RefCount
     for (auto& info : mInfo) {
         auto& buffer = info.executeBuffer;
+        // MNN_PRINT("before resize, mInfo size:%lu, command size:%lu,op type:%s, op name:%s\n", mInfo.size(), buffer.command.size(), EnumNameOpType(info.op->type()), info.op->name()->c_str());
         for (auto& iterP : buffer.command) {
             auto& iter = *iterP;
+            // MNN_PRINT("before resize, compute ref count tensor: %s, output0:%p\n", iter.info->name().c_str(), iter.outputs[0]);
             bool isRaster = iter.op->type() == OpType_Raster;
             for (auto t : iter.inputs) {
                 auto des = TensorUtils::getDescribe(t);
@@ -523,10 +591,17 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc) {
     mBackend->onResizeBegin();
     for (auto& info : mInfo) {
         auto& buffer = info.executeBuffer;
-        for (auto& iterP : buffer.command) {
-            auto& iter = *iterP;
-            // MNN_PRINT("%d - %s\n", i, EnumNameOpType(iter.op->type()));
-            // MNN_PRINT("%s\n", iter.name.c_str());
+        for (auto iterP = buffer.command.begin(); iterP != buffer.command.end(); ++iterP) {
+            auto& iter = **iterP;
+#ifdef MNN_PIPELINE_DEBUG
+            auto memory = const_cast<Runtime*>(mRuntime)->onGetMemoryInMB();
+            if (iter.op->name() != nullptr) {
+                MNN_PRINT("%f, before Resize: %s - %s\n", memory, iter.op->name()->c_str(), EnumNameOpType(iter.op->type()));
+            } else {
+                MNN_PRINT("%f, before Resize: %s\n", memory, EnumNameOpType(iter.op->type()));
+            }
+#endif
+
             if (nullptr == iter.executionOrigin) {
                 bool cached    = false;
                 /** Cache origin execution for fast resize*/
@@ -573,6 +648,7 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc) {
                         // Raster's inputs
                         for (auto& r : des->regions) {
                             auto allocRes = _allocTensor(r.origin, curBackend, mAllocInput, mOutputStatic);
+                            // MNN_PRINT("alloc memory for input:%p, origin:%p, allocRes:%d\n", t, r.origin, allocRes);
                             if (!allocRes) {
                                 return OUT_OF_MEMORY;
                             }
@@ -587,21 +663,32 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc) {
             }
             // Check If need wrap
             bool isRaster = iter.op->type() == OpType_Raster;
+            // MNN_PRINT("isRaster:%d\n", isRaster);
+            bool skipExecution = true;
+            Tensor* reuseTensor = nullptr;
+            Tensor* replacedTensor = nullptr;
             for (int v=0; v<iter.inputs.size(); ++v) {
                 auto t = iter.inputs[v];
                 auto des = TensorUtils::getDescribe(t);
+                // MNN_PRINT("input:%p, regions size:%u\n", t, des->regions.size());
                 if (isRaster) {
                     // Raster's inputs
                     for (auto& r : des->regions) {
-                        MNNForwardType type = MNN_FORWARD_CPU;
                         auto origin     = r.origin;
                         if (WrapExecution::needWrap(origin, curBackend)) {
                             auto newTensor = WrapExecution::copyConstCache(origin, curBackend, mCacheConstTensors);
                             if (nullptr != newTensor) {
                                 r.origin = newTensor;
+                                skipExecution = false && skipExecution;
+                            } else if ((reuseTensor = WrapExecution::getReuseTensor(origin, mBackupBackend.get(), curBackend))) {
+                                r.origin = reuseTensor;
+                                replacedTensor = t;
                             } else {
                                 wrap = true;
+                                skipExecution = false && skipExecution;
                             }
+                        } else {
+                            skipExecution = false && skipExecution;
                         }
                     }
                 } else {
@@ -609,12 +696,32 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc) {
                         auto newTensor = WrapExecution::copyConstCache(t, curBackend, mCacheConstTensors);
                         if (nullptr != newTensor) {
                             iter.inputs[v] = newTensor;
+                            skipExecution = false && skipExecution;
+                        } else if ((reuseTensor = WrapExecution::getReuseTensor(t, mBackupBackend.get(), curBackend))) {
+                            iter.inputs[v] = reuseTensor;
+                            replacedTensor = t;
+                            skipExecution = false && skipExecution;
+                            wrap = false;
                         } else {
                             wrap = true;
+                            skipExecution = false && skipExecution;
                         }
+                    } else {
+                        skipExecution = false && skipExecution;
                     }
                 }
             }
+
+
+            if (skipExecution) {
+                // update following input of t with reuseTensor.op.output
+                _reorderOpCommandList(reuseTensor, replacedTensor, iterP, mInfo);
+                buffer.command.erase(iterP);
+                // release
+                iterP--;
+                continue;
+            }
+
             {
                 for (auto t : iter.outputs) {
                     auto res = _allocTensor(t, curBackend, mAllocInput, mOutputStatic);
@@ -629,6 +736,7 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc) {
             } else {
                 iter.execution = iter.executionOrigin;
             }
+             // MNN_PRINT("before Resize 2, calling: %s \n", iter.info->name().c_str());
             auto code = iter.execution->onResize(iter.inputs, iter.outputs);
             if (NO_ERROR != code && (!iter.info.get())) {
                 MNN_ERROR("Resize error for type = %s, name = %s \n", iter.info->type().c_str(), iter.info->name().c_str());
@@ -665,6 +773,8 @@ ErrorCode Pipeline::execute() {
         auto& buffer = info.executeBuffer;
         for (auto& cmdP : buffer.command) {
             auto& cmd = *cmdP;
+            // MNN_PRINT("before run: %p \n", cmd.info.get());
+            // MNN_PRINT("before run: %s \n", cmd.info->name().c_str());
             auto code = cmd.execution->onExecute(cmd.inputs, cmd.outputs);
             if (NO_ERROR != code) {
                 mBackend->onExecuteEnd();

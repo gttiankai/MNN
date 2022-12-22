@@ -16,7 +16,7 @@
 #define BROAD_LOAD_4(x) _mm_broadcast_ss(x)
 #define LOAD8(x) _mm256_loadu_ps(x)
 #define LOAD4(x) _mm_loadu_ps(x)
-#define STORE_4(d, x) _mm_store_ps(d, x)
+#define STORE_4(d, x) _mm_storeu_ps(d, x)
 #define STORE_8(d, x) _mm256_storeu_ps(d, x)
 
 #include "../avx/GemmFunction.hpp"
@@ -121,8 +121,10 @@ void _AVX_MNNComputeMatMulForH_1FMA(const float* A, const float* B, float* C, co
     const int unit = 8;
     float biasVUnit = 0.0f;
     __m256 biasValue = _mm256_setzero_ps();
+    __m128 biasValue128 = _mm_setzero_ps();
     if (nullptr != biasPtr) {
         biasValue = _mm256_broadcast_ss(biasPtr);
+        biasValue128 = _mm_broadcast_ss(biasPtr);
         biasVUnit = biasPtr[0];
     }
     if (param->ATranspose) {
@@ -240,6 +242,8 @@ void _AVX_MNNComputeMatMulForH_1FMA(const float* A, const float* B, float* C, co
 
         auto r0 = _mm_add_ps(_mm256_extractf128_ps(D0, 0), _mm256_extractf128_ps(D0, 1));
         auto r1 = _mm_add_ps(_mm256_extractf128_ps(D4, 0), _mm256_extractf128_ps(D4, 1));
+        r0 = _mm_add_ps(r0, biasValue128);
+        r1 = _mm_add_ps(r1, biasValue128);
         _mm_storeu_ps(C + y * unit + 0, r0);
         _mm_storeu_ps(C + y * unit + 4, r1);
     }

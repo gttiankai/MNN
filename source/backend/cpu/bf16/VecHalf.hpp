@@ -12,6 +12,18 @@
 #include <stdint.h>
 #include <array>
 #include <algorithm>  // supply std::max and std::min
+
+#ifdef MNN_USE_NEON
+#include <arm_neon.h>
+#endif
+#ifdef MNN_USE_SSE
+#if defined(_MSC_VER)
+#include <intrin.h>
+#else
+#include <x86intrin.h>
+#endif
+#endif
+
 namespace MNN {
 namespace Math {
 
@@ -80,6 +92,13 @@ struct VecHalf {
             value[i] = v;
         }
     }
+
+    VecHalf(float v0, float v1, float v2, float v3) {
+        value[0] = v0;
+        value[1] = v1;
+        value[2] = v2;
+        value[3] = v3;
+    }
     VecHalf(std::array<float, N>&& v) {
         value = std::move(v);
     }
@@ -96,6 +115,15 @@ struct VecHalf {
         auto tempV = (int32_t*)v.value.data();
         for (int i = 0; i < N; ++i) {
             tempV[i] = val << 16;
+        }
+        return v;
+    }
+    static VecType broadcast(int16_t* val) {
+        VecType v;
+        auto tempV = (int32_t*)v.value.data();
+        tempV[0] = (*val) << 16;
+        for (int i = 1; i < N; ++i) {
+            tempV[i] = tempV[0];
         }
         return v;
     }
@@ -150,11 +178,6 @@ struct VecHalf {
 };
 
 #if defined(MNN_USE_SSE)
-#if defined(_MSC_VER)
-#include <intrin.h>
-#else
-#include <x86intrin.h>
-#endif
 
 template<>
 struct VecHalf<4> {
@@ -203,6 +226,9 @@ struct VecHalf<4> {
     VecHalf(const float v) {
         value = _mm_set1_ps(v);
     }
+    VecHalf(const float f0, const float f1, const float f2, const float f3) {
+        value = _mm_set_ps(f0, f1, f2, f3);
+    }
     VecHalf(__m128& v) {
         value = v;
     }
@@ -234,6 +260,9 @@ struct VecHalf<4> {
 #endif
         VecType v = { std::move(res) };
         return v;
+    }
+    static VecType broadcast(int16_t* val) {
+        return broadcast(*val);
     }
     static VecType load(const int16_t* addr) {
         auto temp = _mm_loadl_epi64((__m128i*)addr);
@@ -294,7 +323,6 @@ struct VecHalf<4> {
 #endif
 
 #if defined(MNN_USE_NEON)
-#include <arm_neon.h>
 
 template<>
 struct VecHalf<4> {
@@ -338,6 +366,12 @@ struct VecHalf<4> {
     VecHalf(const float v) {
         value = vdupq_n_f32(v);
     }
+    VecHalf(const float f0, const float f1, const float f2, const float f3) {
+         vsetq_lane_f32(f0, value, 0);
+         vsetq_lane_f32(f1, value, 1);
+         vsetq_lane_f32(f2, value, 2);
+         vsetq_lane_f32(f3, value, 3);
+    }
     VecHalf(float32x4_t& v) {
         value = v;
     }
@@ -353,6 +387,10 @@ struct VecHalf<4> {
     float operator[](const int i) {
         // vgetq_lane_f32(value, i) does NOT work, i must be const number such as 0, 2,
         return value[i];
+    }
+    static VecType broadcast(int16_t* valPtr) {
+        VecType dst = { vreinterpretq_f32_s32(vshll_n_s16(vld1_dup_s16(valPtr), 16)) };
+        return dst;
     }
     static VecType broadcast(int16_t val) {
         VecType dst = { vreinterpretq_f32_s32(vshll_n_s16(vdup_n_s16(val), 16)) };

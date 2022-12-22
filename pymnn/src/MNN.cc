@@ -19,7 +19,9 @@ static int tls_key_2 = 0;
 #include <MNN/expr/ExecutorScope.hpp>
 #include <MNN/expr/Module.hpp>
 using namespace MNN::Express;
+#ifdef PYMNN_OPENCV_API
 #include "cv/cv.hpp"
+#endif
 #endif // PYMNN_EXPR_API
 
 #ifdef BUILD_OPTYPE
@@ -64,6 +66,12 @@ using RegularizationMethod = ParameterOptimizer::RegularizationMethod;
 #endif
 #endif
 
+#ifdef PYMNN_INTERNAL_SERVING
+#include <MNN/AutoTime.hpp>
+#include "internal/monitor_service.h"
+#include "internal/verify_service.h"
+#endif
+
 struct MNN_TLSData {
     PyObject *PyMNNHalideTypeInt = NULL;
     PyObject *PyMNNHalideTypeInt64 = NULL;
@@ -73,6 +81,11 @@ struct MNN_TLSData {
     PyObject *PyMNNHalideTypeString = NULL;
     std::unordered_map<std::string, Interpreter *> *interpreterMap = NULL;
     std::unordered_map<std::string, Session *> *sessionCacheMap = NULL;
+#ifdef PYMNN_EXPR_API
+#if TARGET_OS_IPHONE
+    ExecutorScope* scope = NULL;
+#endif
+#endif
 };
 static MNN_TLSData* old_python_data = NULL;
 static MNN_TLSData * getTLSData() {
@@ -98,8 +111,10 @@ static PyObject *importName(const char *name, const char *symbol)
     if (!module) {
         return NULL;
     }
-    Py_DECREF(u_name);
-    return PyObject_GetAttrString(module, symbol);
+    auto f = PyObject_GetAttrString(module, symbol);
+    Py_XDECREF(module);
+    Py_XDECREF(u_name);
+    return f;
 }
 
 typedef struct {
@@ -180,18 +195,27 @@ static PyObject* PyMNNInterpreter_getSessionOutputAll(PyMNNInterpreter *self, Py
 static PyObject* PyMNNInterpreter_getSessionInfo(PyMNNInterpreter *self, PyObject *args);
 static PyObject* PyMNNInterpreter_setCacheFile(PyMNNInterpreter *self, PyObject *args);
 static PyObject* PyMNNInterpreter_updateCacheFile(PyMNNInterpreter *self, PyObject *args);
+static PyObject* PyMNNInterpreter_setSessionMode(PyMNNInterpreter *self, PyObject *args);
+static PyObject* PyMNNInterpreter_setSessionHint(PyMNNInterpreter *self, PyObject *args);
 static PyObject* PyMNNInterpreter_cache(PyMNNInterpreter *self, PyObject *args);
 static PyObject* PyMNNInterpreter_removeCache(PyMNNInterpreter *self, PyObject *args);
 static PyObject* PyMNNInterpreter_updateSessionToModel(PyMNNInterpreter *self, PyObject *args);
+static PyObject* PyMNNInterpreter_getModelVersion(PyMNNInterpreter *self, PyObject *args);
 static PyObject* PyMNNInterpreter_new(struct _typeobject *type, PyObject *args, PyObject *kwds);
 static int PyMNNInterpreter_init(PyMNNInterpreter *self, PyObject *args, PyObject *kwds);
 static void PyMNNInterpreter_dealloc(PyMNNInterpreter *);
+
+#ifdef PYMNN_INTERNAL_SERVING
+static PyObject* PyMNNInterpreter_createSessionWithToken(PyMNNInterpreter *self, PyObject *args);
+#endif
 
 static PyMethodDef PyMNNInterpreter_methods[] = {
     {"createRuntime", (PyCFunction)PyMNNInterpreter_createRuntime, METH_VARARGS | METH_STATIC, "create runtime"},
     {"createSession", (PyCFunction)PyMNNInterpreter_createSession, METH_VARARGS, "create session"},
     {"setCacheFile", (PyCFunction)PyMNNInterpreter_setCacheFile, METH_VARARGS, "set cache file for create session"},
     {"updateCacheFile", (PyCFunction)PyMNNInterpreter_updateCacheFile, METH_VARARGS, "update cache file after resize session"},
+    {"setSessionMode", (PyCFunction)PyMNNInterpreter_setSessionMode, METH_VARARGS, "set session mode before create session"},
+    {"setSessionHint", (PyCFunction)PyMNNInterpreter_setSessionHint, METH_VARARGS, "set session hint before create session"},
     {"resizeSession", (PyCFunction)PyMNNInterpreter_resizeSession, METH_VARARGS, "resize session"},
     {"runSession", (PyCFunction)PyMNNInterpreter_runSession, METH_VARARGS, "run session"},
     {"runSessionWithCallBack", (PyCFunction)PyMNNInterpreter_runSessionWithCallBack, METH_VARARGS, "run session with callback"},
@@ -205,6 +229,10 @@ static PyMethodDef PyMNNInterpreter_methods[] = {
     {"cache", (PyCFunction)PyMNNInterpreter_cache, METH_VARARGS, "cache current net instance"},
     {"removeCache", (PyCFunction)PyMNNInterpreter_removeCache, METH_VARARGS, "remove cache with given path"},
     {"updateSessionToModel", (PyCFunction)PyMNNInterpreter_updateSessionToModel, METH_VARARGS, "updateSessionToModel"},
+    {"getModelVersion", (PyCFunction)PyMNNInterpreter_getModelVersion, METH_VARARGS, "getModelVersion"},
+#ifdef PYMNN_INTERNAL_SERVING
+    {"createSessionWithToken", (PyCFunction)PyMNNInterpreter_createSessionWithToken, METH_VARARGS, "create session with token"},
+#endif
     {NULL}  /* Sentinel */
 };
 
@@ -306,9 +334,11 @@ static PyTypeObject PyMNNSessionType = {
 static PyObject* PyMNNTensor_new(struct _typeobject *type, PyObject *args, PyObject *kwds);
 static void PyMNNTensor_dealloc(PyMNNTensor *);
 static int PyMNNTensor_init(PyMNNTensor *self, PyObject *args, PyObject *kwds);
+static PyObject* PyMNNTensor_repr(PyObject *self);
 #ifdef PYMNN_NUMPY_USABLE
 static PyObject* PyMNNTensor_fromNumpy(PyMNNTensor *self, PyObject *args);
 static PyObject* PyMNNTensor_getNumpyData(PyMNNTensor *self, PyObject *args);
+static bool gNumpyValid = false;
 #endif
 static PyObject* PyMNNTensor_printTensorData(PyMNNTensor *self, PyObject *args);
 static PyObject* PyMNNTensor_getShape(PyMNNTensor *self, PyObject *args);
@@ -346,7 +376,7 @@ static PyTypeObject PyMNNTensorType = {
     0,                                        /*tp_getattr*/
     0,                                        /*tp_setattr*/
     0,                                        /*tp_compare*/
-    0,                                        /*tp_repr*/
+    PyMNNTensor_repr,                         /*tp_repr*/
     0,                                        /*tp_as_number*/
     0,                                        /*tp_as_sequence*/
     0,                                        /*tp_as_mapping*/
@@ -480,10 +510,10 @@ static PyMethodDef PyMNNCVMatrix_methods[] = {
 
 static PyTypeObject PyMNNCVMatrixType = {
     PyVarObject_HEAD_INIT(NULL, 0)
-    "MNN.CVImageProcess",                   /*tp_name*/
-    sizeof(PyMNNCVMatrix),                      /*tp_basicsize*/
+    "MNN.CVMatrix",                           /*tp_name*/
+    sizeof(PyMNNCVMatrix),                    /*tp_basicsize*/
     0,                                        /*tp_itemsize*/
-    (destructor)PyMNNCVMatrix_dealloc,          /*tp_dealloc*/
+    (destructor)PyMNNCVMatrix_dealloc,        /*tp_dealloc*/
     0,                                        /*tp_print*/
     0,                                        /*tp_getattr*/
     0,                                        /*tp_setattr*/
@@ -628,6 +658,14 @@ static std::pair<bool, std::pair<ScheduleConfig, std::shared_ptr<BackendConfig>>
                     MNN_PRINT("MNN use low precision\n");
                     backendConfig->precision = MNN::BackendConfig::Precision_Low;
                 }
+                if (!obj_name.compare("Low_BF16")) {
+                    MNN_PRINT("MNN use lowBF precision\n");
+                    backendConfig->precision = MNN::BackendConfig::Precision_Low_BF16;
+                }
+                if (!obj_name.compare("high")) {
+                    MNN_PRINT("MNN use high precision\n");
+                    backendConfig->precision = MNN::BackendConfig::Precision_High;
+                }
             }
         }
 
@@ -651,7 +689,7 @@ static void _runtime_capsule_deleter(PyObject *obj) {
 static PyObject* PyMNNInterpreter_createRuntime(PyObject* self, PyObject* args) {
     PyMNNInterpreter* instance = (PyMNNInterpreter *)self;
     PyObject* dicts = NULL;
-    if (!PyArg_ParseTuple(args, "|O", &dicts)) {
+    if (!PyArg_ParseTuple(args, "O", &dicts)) {
         return NULL;
     }
     if (!PySequence_Check(dicts)) {
@@ -681,13 +719,7 @@ static PyObject* PyMNNInterpreter_createRuntime(PyObject* self, PyObject* args) 
     return res;
 }
 
-static PyObject* PyMNNInterpreter_createSession(PyMNNInterpreter *self, PyObject *args) {
-    PyMNNInterpreter* instance = (PyMNNInterpreter *)self;
-    PyObject* dict = NULL, *rtinfo_py = NULL;
-    if (!PyArg_ParseTuple(args, "|OO", &dict, &rtinfo_py)) {
-        return NULL;
-    }
-
+static PyObject* createSession(PyMNNInterpreter *self, PyObject* dict, PyObject *rtinfo_py) {
     PyObject *f = importName("MNN", "Session");
     if (!f || !PyCallable_Check(f)) {
         PyErr_SetString(PyExc_Exception,
@@ -696,7 +728,8 @@ static PyObject* PyMNNInterpreter_createSession(PyMNNInterpreter *self, PyObject
     }
 
     // create a new session
-    PyMNNSession *session = (PyMNNSession *)PyObject_Call(f, PyTuple_New(0), NULL);
+    PyMNNSession *session = (PyMNNSession *)PyObject_CallObject(f, NULL);
+    Py_XDECREF(f);
     if (!session) {
         PyErr_SetString(PyExc_Exception,
                         "PyMNNInterpreter_createSession: MNN.Session instance create failed");
@@ -715,10 +748,10 @@ static PyObject* PyMNNInterpreter_createSession(PyMNNInterpreter *self, PyObject
     }
     Session* s;
     if (rtinfo_py == NULL) {
-        s = instance->interpreter->createSession(config.second.first);
+        s = self->interpreter->createSession(config.second.first);
     } else {
         auto runtimeinfo = *(RuntimeInfo*)PyCapsule_GetPointer(rtinfo_py, NULL);
-        s = instance->interpreter->createSession(config.second.first, runtimeinfo);
+        s = self->interpreter->createSession(config.second.first, runtimeinfo);
     }
     if (!s) {
         PyErr_SetString(PyExc_Exception,
@@ -727,10 +760,53 @@ static PyObject* PyMNNInterpreter_createSession(PyMNNInterpreter *self, PyObject
     }
 
     session->session = s;
-    session->modelPath = instance->modelPath;
+    session->modelPath = self->modelPath;
 
     return (PyObject *)session;
 }
+
+static PyObject* PyMNNInterpreter_createSession(PyMNNInterpreter *self, PyObject *args) {
+#ifdef PYMNN_INTERNAL_SERVING
+    PyErr_SetString(PyExc_Exception,
+                        "PyMNNInterpreter_createSession: unsupported interface, should use createSessionWithToken.");
+    return NULL;
+#endif
+    PyMNNInterpreter* instance = (PyMNNInterpreter *)self;
+    PyObject* dict = NULL, *rtinfo_py = NULL;
+    if (!PyArg_ParseTuple(args, "|OO", &dict, &rtinfo_py)) {
+        return NULL;
+    }
+
+    return createSession(instance, dict, rtinfo_py);
+}
+
+#ifdef PYMNN_INTERNAL_SERVING
+static PyObject* PyMNNInterpreter_createSessionWithToken(PyMNNInterpreter *self, PyObject *args) {
+    PyMNNInterpreter* instance = (PyMNNInterpreter *)self;
+    PyObject* dict = NULL, *rtinfo_py = NULL;
+    char *token = NULL;
+    char *scene = NULL;
+    char *app_key = NULL;
+    if (!PyArg_ParseTuple(args, "sss|OO", &token, &scene, &app_key, &dict, &rtinfo_py)) {
+        return NULL;
+    }
+
+    if (!token || !scene || !app_key) {
+        PyErr_SetString(PyExc_Exception,
+                        "PyMNNInterpreter_createSessionWithToken: input invalid, token, scene or app_key is null.");
+        return NULL;
+    }
+
+    bool ret = VerifyService::GetInstance().VerifyToken(std::string(token), std::string(scene), std::string(app_key));
+    if (!ret) {
+        PyErr_SetString(PyExc_Exception,
+                        "PyMNNNN_createSessionWithToken: check token failed, return null session.");
+        return NULL;
+    }
+
+    return createSession(instance, dict, rtinfo_py);
+}
+#endif
 
 static PyObject* PyMNNInterpreter_resizeSession(PyMNNInterpreter *self, PyObject *args) {
     PyMNNSession* session = NULL;
@@ -807,6 +883,30 @@ static PyObject* PyMNNInterpreter_updateCacheFile(PyMNNInterpreter *self, PyObje
     r = self->interpreter->updateCacheFile(session->session, flag);
     return PyLong_FromLong(r);
 }
+static PyObject* PyMNNInterpreter_setSessionMode(PyMNNInterpreter *self, PyObject *args) {
+    int session_val;
+    if (!PyArg_ParseTuple(args, "i", &session_val)) {
+        PyErr_SetString(PyExc_Exception,
+                        "PyMNNInterpreter_setSessionMode: Not interger input");
+        return NULL;
+    }
+    auto mode = (MNN::Interpreter::SessionMode)session_val;
+    self->interpreter->setSessionMode(mode);
+    Py_RETURN_NONE;
+}
+static PyObject* PyMNNInterpreter_setSessionHint(PyMNNInterpreter *self, PyObject *args) {
+    int type_val = 0;
+    int num_val = 0;
+    if (!PyArg_ParseTuple(args, "ii", &type_val, &num_val)) {
+        PyErr_SetString(PyExc_Exception,
+                        "PyMNNInterpreter_setSessionHint: Not interger input and interger input");
+        return NULL;
+    }
+
+    auto type = (MNN::Interpreter::HintMode)type_val;
+    self->interpreter->setSessionHint(type, num_val);
+    Py_RETURN_NONE;
+}
 static PyObject* PyMNNInterpreter_runSession(PyMNNInterpreter *self, PyObject *args) {
     PyMNNSession* session = NULL;
     if (!args) {
@@ -826,12 +926,27 @@ static PyObject* PyMNNInterpreter_runSession(PyMNNInterpreter *self, PyObject *a
     }
     ErrorCode r = NO_ERROR;
     Py_BEGIN_ALLOW_THREADS
+
+#ifdef PYMNN_INTERNAL_SERVING
+    Timer timer;
     r = self->interpreter->runSession(session->session);
+    float cost_time = (float)timer.durationInUs() / (float)1000;
+    MNN::Interpreter::SessionInfoCode info_type = MNN::Interpreter::BACKENDS;
+    int backendType[MNN_FORWARD_ALL];
+    self->interpreter->getSessionInfo(session->session, info_type, backendType);
+    std::string mBizCode = self->interpreter->bizCode() ? self->interpreter->bizCode() : "";
+    std::string mUuid = self->interpreter->uuid() ? self->interpreter->uuid() : "";
+    MonitorService::GetInstance().Track(cost_time, std::to_string(*backendType), "RUN_SESSION",
+                                             "PyMNNInterpreter_runSession", std::to_string(r), mBizCode, mUuid);
+#else
+    r = self->interpreter->runSession(session->session);
+#endif
+
     Py_END_ALLOW_THREADS
     return PyLong_FromLong(r);
 }
 static PyMNNTensor* getTensor() {
-    PyMNNTensor *tensor = (PyMNNTensor *)PyObject_Call((PyObject*)&PyMNNTensorType, PyTuple_New(0), NULL);
+    PyMNNTensor *tensor = (PyMNNTensor *)PyObject_CallObject((PyObject*)PyType_FindTLSType(&PyMNNTensorType), NULL);
     if (tensor) {
         tensor->tensor = nullptr;
     }
@@ -878,7 +993,9 @@ static PyObject* PyMNNInterpreter_runSessionWithCallBack(PyMNNInterpreter *self,
         PyObject *weStringData = char2Object(name.c_str());
         PyTuple_SetItem(args, 0, weTensorData);
         PyTuple_SetItem(args, 1, weStringData);
-        bool ret = static_cast<bool>(PyLong_AsLong(PyObject_Call(beginCallback, args, NULL)));
+        auto pyret = PyObject_Call(beginCallback, args, NULL);
+        bool ret = static_cast<bool>(PyLong_AsLong(pyret));
+        Py_XDECREF(pyret);
         Py_XDECREF(args);//del all the C++ created python api parameters
         return ret;
     };
@@ -903,7 +1020,9 @@ static PyObject* PyMNNInterpreter_runSessionWithCallBack(PyMNNInterpreter *self,
         PyObject *weStringData = char2Object(name.c_str());
         PyTuple_SetItem(args, 0, weTensorData);
         PyTuple_SetItem(args, 1, weStringData);
-        bool ret = static_cast<bool>(PyLong_AsLong(PyObject_Call(endCallback, args, NULL)));
+        auto pyret = PyObject_Call(endCallback, args, NULL);
+        bool ret = static_cast<bool>(PyLong_AsLong(pyret));
+        Py_XDECREF(pyret);
         Py_XDECREF(args);//del all the C++ created python api parameters
         return ret;
     };
@@ -960,7 +1079,7 @@ static PyObject* PyMNNInterpreter_runSessionWithCallBackInfo(PyMNNInterpreter *s
         PyObject *weTensorData = PyTuple_New(size_tensors);
         for (size_t i = 0; i < size_tensors; i++) {
             // create a new tensor
-            PyMNNTensor *tensor = (PyMNNTensor *)PyObject_Call(ftensor, PyTuple_New(0), NULL);
+            PyMNNTensor *tensor = (PyMNNTensor *)PyObject_CallObject(ftensor, NULL);
             if (!tensor) {
                 PyErr_SetString(PyExc_Exception,
                         "PyMNNInterpreter_runSessionWithCallBackInfo: create Tensor failed");
@@ -970,7 +1089,7 @@ static PyObject* PyMNNInterpreter_runSessionWithCallBackInfo(PyMNNInterpreter *s
             PyTuple_SetItem(weTensorData, i, (PyObject *)tensor);
         }
         //printf("begincallback name=%s\n",name.c_str());
-        PyMNNOpInfo *pyinfo = (PyMNNOpInfo *)PyObject_Call(finfo,PyTuple_New(0), NULL);
+        PyMNNOpInfo *pyinfo = (PyMNNOpInfo *)PyObject_CallObject(finfo, NULL);
         if(!pyinfo){
             PyErr_SetString(PyExc_Exception,
                     "PyMNNInterpreter_runSessionWithCallBackInfo: create OpInfo failed");
@@ -979,8 +1098,12 @@ static PyObject* PyMNNInterpreter_runSessionWithCallBackInfo(PyMNNInterpreter *s
         pyinfo->opInfo = info;
         PyTuple_SetItem(args, 0, weTensorData);
         PyTuple_SetItem(args, 1, (PyObject *)pyinfo);
-        bool ret = static_cast<bool>(PyLong_AsLong(PyObject_Call(beginCallback, args, NULL)));
+        auto pyret = PyObject_Call(beginCallback, args, NULL);
+        bool ret = static_cast<bool>(PyLong_AsLong(pyret));
+        Py_XDECREF(pyret);
         Py_XDECREF(args);//del all the C++ created python api parameters
+        Py_XDECREF(ftensor);
+        Py_XDECREF(finfo);
         return ret;
     };
     TensorCallBackWithInfo end = [endCallback](const std::vector<Tensor*>& tensors, const OperatorInfo* info){
@@ -1004,7 +1127,7 @@ static PyObject* PyMNNInterpreter_runSessionWithCallBackInfo(PyMNNInterpreter *s
         PyObject *weTensorData = PyTuple_New(size_tensors);
         for (size_t i = 0; i < size_tensors; i++) {
             // create a new tensor
-            PyMNNTensor *tensor = (PyMNNTensor *)PyObject_Call(ftensor, PyTuple_New(0), NULL);
+            PyMNNTensor *tensor = (PyMNNTensor *)PyObject_CallObject(ftensor, NULL);
             if (!tensor) {
                 PyErr_SetString(PyExc_Exception,
                         "PyMNNInterpreter_runSessionWithCallBackInfo: create Tensor failed");
@@ -1013,7 +1136,7 @@ static PyObject* PyMNNInterpreter_runSessionWithCallBackInfo(PyMNNInterpreter *s
             tensor->tensor = tensors[i];
             PyTuple_SetItem(weTensorData, i, (PyObject *)tensor);
         }
-        PyMNNOpInfo *pyinfo = (PyMNNOpInfo *)PyObject_Call(finfo,PyTuple_New(0), NULL);
+        PyMNNOpInfo *pyinfo = (PyMNNOpInfo *)PyObject_CallObject(finfo, NULL);
         if(!pyinfo){
             PyErr_SetString(PyExc_Exception,
                     "PyMNNInterpreter_runSessionWithCallBackInfo: create OpInfo failed");
@@ -1022,8 +1145,12 @@ static PyObject* PyMNNInterpreter_runSessionWithCallBackInfo(PyMNNInterpreter *s
         pyinfo->opInfo = info;
         PyTuple_SetItem(args, 0, weTensorData);
         PyTuple_SetItem(args, 1, (PyObject *)pyinfo);
-        bool ret = static_cast<bool>(PyLong_AsLong(PyObject_Call(endCallback, args, NULL)));
+        auto pyret = PyObject_Call(endCallback, args, NULL);
+        bool ret = static_cast<bool>(PyLong_AsLong(pyret));
+        Py_XDECREF(pyret);
         Py_XDECREF(args);//del all the C++ created python api parameters
+        Py_XDECREF(ftensor);
+        Py_XDECREF(finfo);
         return ret;
     };
 
@@ -1063,7 +1190,7 @@ static PyObject* PyMNNInterpreter_getSessionOutput(PyMNNInterpreter *self, PyObj
     }
 
     // create a new tensor
-    PyMNNTensor *tensor = (PyMNNTensor *)PyObject_Call(f, PyTuple_New(0), NULL);
+    PyMNNTensor *tensor = (PyMNNTensor *)PyObject_CallObject(f, NULL);
     if (!tensor) {
         PyErr_SetString(PyExc_Exception,
                         "PyMNNInterpreter_createSession: MNN.Session instance create failed");
@@ -1071,6 +1198,7 @@ static PyObject* PyMNNInterpreter_getSessionOutput(PyMNNInterpreter *self, PyObj
     }
 
     tensor->tensor = t;
+    Py_XDECREF(f);
     return (PyObject *)tensor;
 }
 
@@ -1102,7 +1230,7 @@ static PyObject* PyMNNInterpreter_getSessionInput(PyMNNInterpreter *self, PyObje
     }
 
     // create a new tensor
-    PyMNNTensor *tensor = (PyMNNTensor *)PyObject_Call(f, PyTuple_New(0), NULL);
+    PyMNNTensor *tensor = (PyMNNTensor *)PyObject_CallObject(f, NULL);
     if (!tensor) {
         PyErr_SetString(PyExc_Exception,
                         "PyMNNInterpreter_createSession: MNN.Session instance create failed");
@@ -1110,6 +1238,7 @@ static PyObject* PyMNNInterpreter_getSessionInput(PyMNNInterpreter *self, PyObje
     }
 
     tensor->tensor = t;
+    Py_XDECREF(f);
     return (PyObject *)tensor;
 }
 
@@ -1130,14 +1259,16 @@ static PyObject* PyMNNInterpreter_getSessionOutputAll(PyMNNInterpreter *self, Py
     auto map = self->interpreter->getSessionOutputAll(session->session);
     PyObject* output = PyDict_New();
     for (auto it=map.begin(); it!=map.end(); ++it) {
-        PyObject *tensor = PyObject_Call(f, PyTuple_New(0), NULL);
+        PyObject *tensor = PyObject_CallObject(f, NULL);
         if (!tensor) {
             PyErr_SetString(PyExc_Exception,"PyMNNInterpreter_getSessionOutputAll: MNN.Tensor instance create failed");
             return NULL;
         }
         ((PyMNNTensor*)tensor)->tensor = it->second;
-        PyDict_SetItem(output, char2Object(it->first.c_str()), tensor);
+        PyDict_SetItemString(output, it->first.c_str(), tensor);
+        Py_XDECREF(tensor);
     }
+    Py_XDECREF(f);
     return output;
 }
 
@@ -1180,14 +1311,16 @@ static PyObject* PyMNNInterpreter_getSessionInputAll(PyMNNInterpreter *self, PyO
     auto map = self->interpreter->getSessionInputAll(session->session);
     PyObject* output = PyDict_New();
     for (auto it=map.begin(); it!=map.end(); ++it) {
-        PyObject *tensor = PyObject_Call(f, PyTuple_New(0), NULL);
+        PyObject *tensor = PyObject_CallObject(f, NULL);
         if (!tensor) {
             PyErr_SetString(PyExc_Exception,"PyMNNInterpreter_getSessionInputAll: MNN.Tensor instance create failed");
             return NULL;
         }
         ((PyMNNTensor*)tensor)->tensor = it->second;
-        PyDict_SetItem(output, char2Object(it->first.c_str()), tensor);
+        PyDict_SetItemString(output, it->first.c_str(), tensor);
+        Py_XDECREF(tensor);
     }
+    Py_XDECREF(f);
     return output;
 }
 
@@ -1218,9 +1351,15 @@ static int PyMNNInterpreter_init(PyMNNInterpreter *self, PyObject *args, PyObjec
     }
     if (!self->interpreter) {
         PyErr_SetString(PyExc_Exception,
-                        "PyMNNInterpreter_new: NetInstance::createFromFile failed. Invalid model file or model authentication failed. Check console log messages!");
+                        "PyMNNInterpreter_new: NetInstance::createFromFile failed. Invalid model file, Check console log messages!");
         return -1;
     }
+
+#ifdef PYMNN_INTERNAL_SERVING
+    // initialize MonitorService
+    MonitorService::GetInstance().Start();
+    VerifyService::GetInstance().Start();
+#endif
 
     return 0;
 }
@@ -1264,6 +1403,10 @@ static PyObject* PyMNNInterpreter_updateSessionToModel(PyMNNInterpreter *self, P
         output.write((const char*)modelBuffer.first, modelBuffer.second);
     }
     Py_RETURN_NONE;
+}
+
+static PyObject* PyMNNInterpreter_getModelVersion(PyMNNInterpreter *self, PyObject *args) {
+    return toPyObj(self->interpreter->getModelVersion());
 }
 
 static void PyMNNInterpreter_dealloc(PyMNNInterpreter *self) {
@@ -1315,7 +1458,7 @@ static PyObject* PyMNNSession_removeCache(PyMNNSession *self, PyObject *args) {
 
 /// MNN Tensor implementation
 bool isTensor(PyObject* t) {
-    return PyObject_IsInstance(t, (PyObject*)&PyMNNTensorType);
+    return PyObject_IsInstance(t, (PyObject*)PyType_FindTLSType(&PyMNNTensorType));
 }
 Tensor* toTensor(PyObject* t) {
     return ((PyMNNTensor*)t)->tensor;
@@ -1337,35 +1480,74 @@ static void PyMNNTensor_dealloc(PyMNNTensor *self) {
 
 static int PyMNNTensor_init(PyMNNTensor *self, PyObject *args, PyObject *kwds) {
     int argc = PyTuple_Size(args);
-    PyObject *shape, *dataType, *data = nullptr, *input_tensor = nullptr;
-    long dimensionType;
+    PyObject *shape, *dataType, *data = nullptr, *input_tensor = nullptr, *input_var = nullptr;
+    long dimensionType = -1;
     bool parse_res = false;
     switch (argc) {
         case 0:
             // just return, using in `PyMNNInterpreter_getSessionInputAll`;
             return 0;
+#ifdef PYMNN_EXPR_API
+        case 1:
+            parse_res = PyArg_ParseTuple(args, "O", &input_var)
+                        && isVar(input_var);
+            break;
+        case 2:
+            parse_res = PyArg_ParseTuple(args, "Ol", &input_tensor, &dimensionType)
+                        && (isTensor(input_tensor) || isVar(input_tensor));
+            if (isVar(input_tensor)) {
+                input_var = input_tensor;
+                input_tensor = nullptr;
+            }
+            break;
+#else
         case 2:
             parse_res = PyArg_ParseTuple(args, "Ol", &input_tensor, &dimensionType)
                         && isTensor(input_tensor);
             break;
+#endif
         case 3:
             parse_res = PyArg_ParseTuple(args, "OOl", &shape, &dataType, &dimensionType)
                         && isInts(shape);
             break;
         case 4:
             parse_res = PyArg_ParseTuple(args, "OOOl", &shape, &dataType, &data, &dimensionType)
-                        && isInts(shape) && isVals(data);
+                        && isInts(shape) && (isVals(data) || isInt(data));
             break;
         default:
             parse_res = false;
     }
     if (!parse_res) {
         PyMNN_ERROR_LOG("Tensor init require args as belows:\n"
-                        "\t1. (Tensor, DimensionType)\n"
+                        "\t0. (Var)\n"
+                        "\t1. (Tensor/Var, DimensionType)\n"
                         "\t2. ([int], DataType, DimensionType)\n"
-                        "\t3. ([int], DataType, tuple/ndarray, DimensionType)\n");
+                        "\t3. ([int], DataType, ndarray/list/tuple/bytes/PyCapsule/int_addr, DimensionType)\n");
+        return -1;
     }
-
+#ifdef PYMNN_EXPR_API
+    // 0. create Tensor by Var
+    if (input_var) {
+        auto var = toVar(input_var);
+        auto info = var->getInfo();
+        void* ptr = const_cast<void*>(var->readMap<void>());
+        Tensor::DimensionType type = Tensor::TENSORFLOW;
+        if (dimensionType < 0) {
+            if (info->order == NCHW) type = Tensor::CAFFE;
+            else if (info->order == NC4HW4) type = Tensor::CAFFE_C4;
+        } else {
+            type = static_cast<Tensor::DimensionType>(dimensionType);
+        }
+        Tensor *tensor = Tensor::create(info->dim, info->type, ptr, type);
+        if (!tensor) {
+            PyMNN_ERROR_LOG("PyMNNTensor_create: Tensor create failed");
+            return -1;
+        }
+        self->tensor = tensor;
+        self->owner = 2;
+        return 0;
+    }
+#endif
     // 1. create Tensor by Tensor
     if (input_tensor) {
         Tensor *tensor = new Tensor(toTensor(input_tensor), (Tensor::DimensionType)dimensionType, true);
@@ -1378,38 +1560,6 @@ static int PyMNNTensor_init(PyMNNTensor *self, PyObject *args, PyObject *kwds) {
         return 0;
     }
     // 2,3. create Tensor by shape and data
-    size_t shapeSize = PyTuple_Size(shape);
-    std::vector<int> vShape = toInts(shape);
-    size_t dataSize = 1;
-    for (auto i : vShape) {
-        dataSize *= i;
-    }
-    int inputData = 0; // 0: no data; 1: tuple; 2. ndarray
-    void *pData = NULL;
-    if (data) {
-        if(PyTuple_Check(data)) {
-            if(dataSize != PyTuple_Size(data)) {
-                PyErr_SetString(PyExc_Exception,
-                            "PyMNNTensor_init: Tensor Dim not match");
-                return -1;
-            }
-            inputData = 1;
-        }
-#ifdef PYMNN_NUMPY_USABLE
-        else {
-            if(PyArray_Check(data)) {
-                if(dataSize != PyArray_Size(data)) {
-                    PyErr_SetString(PyExc_Exception, "PyMNNTensor_init: numpy array size does not match shape requirement");
-                    return -1;
-                }
-                inputData = 2;
-            } else {
-                PyErr_SetString(PyExc_Exception, "PyMNNTensor_init: data is not tuple/numpy");
-                return -1;
-            }
-        }
-#endif
-    }
     halide_type_t htt;
     struct MNN_TLSData *tlsData = getTLSData();
     if (dataType == tlsData->PyMNNHalideTypeInt) {
@@ -1431,74 +1581,108 @@ static int PyMNNTensor_init(PyMNNTensor *self, PyObject *args, PyObject *kwds) {
         htt = *httString();
     }
     else {
-        PyErr_SetString(PyExc_Exception,"PyMNNTensor_create: unsupported data type");
+        PyMNN_ERROR_LOG("PyMNNTensor_create: unsupported data type");
         return -1;
     }
     DType dtype = htype2dtype(htt);
     int itemsize = getitemsize(dtype);
-    pData = malloc(dataSize * itemsize);
-    if(NULL == pData) {
-        PyErr_SetString(PyExc_Exception,"PyMNNTensor_init: malloc failed");
-        return -1;
+    size_t shapeSize = PySequenceSize(shape);
+    std::vector<int> vShape = toInts(shape);
+    size_t dataSize = 1;
+    for (auto i : vShape) {
+        dataSize *= i;
     }
-    if(inputData == 1) {
-        if (dataType == tlsData->PyMNNHalideTypeInt) {
-            for (size_t i = 0; i < dataSize; i++) {
-                ((int *)pData)[i] = (int)PyLong_AsLong(PyTuple_GetItem(data, i));
+    void *pData = NULL;
+    if (data && !PyCapsule_CheckExact(data) && !isInt(data)) {
+        if (PyBytes_Check(data)) {
+            int64_t total_len = PyBytes_Size(data);
+            if (dataSize * itemsize != total_len) {
+                PyMNN_ERROR_LOG("PyMNNTensor_init: Tensor Dim not match");
+                return -1;
             }
-        } else if (dataType == tlsData->PyMNNHalideTypeFloat) {
-            for (size_t i = 0; i < dataSize; i++) {
-                ((float *)pData)[i] = (float)PyFloat_AsDouble(PyTuple_GetItem(data, i));
+            pData = toPtr(data, DType_UINT8, total_len);
+        } else {
+            if (isPySequence(data)) {
+                int inputSize = PySequenceSize(data);
+                if (dataSize != inputSize) {
+                    PyMNN_ERROR_LOG("PyMNNTensor_init: Tensor Dim not match");
+                    return -1;
+                }
             }
-        } else if (dataType == tlsData->PyMNNHalideTypeDouble) {
-            for (size_t i = 0; i < dataSize; i++) {
-               ((double *)pData)[i] = PyFloat_AsDouble(PyTuple_GetItem(data, i));
-            }
-        } else if (dataType == tlsData->PyMNNHalideTypeUint8) {
-            for (size_t i = 0; i < dataSize; i++) {
-               ((uint8_t *)pData)[i] = (uint8_t)PyLong_AsLong(PyTuple_GetItem(data, i));
-            }
-        } else if (dataType == tlsData->PyMNNHalideTypeInt64) {
-            for (size_t i = 0; i < dataSize; i++) {
-               ((int64_t *)pData)[i] = (int64_t)PyLong_AsLong(PyTuple_GetItem(data, i));
-            }
-         } else if (dataType == tlsData->PyMNNHalideTypeString) {
-            for (size_t i = 0; i < dataSize; i++) {
-               char *item = (char *)object2String(PyTuple_GetItem(data, i)).c_str();
-               ((char **)pData)[i] = item;
-            }
-        }
-    }
 #ifdef PYMNN_NUMPY_USABLE
-    else if (inputData == 2) {
-        int npy_type = PyArray_TYPE(data);
-        getitemsize(dtype, npy_type);
-        PyArrayObject *data_cont= PyArray_GETCONTIGUOUS((PyArrayObject*)data);
-        auto tmpBuffer = PyArray_DATA(data_cont);
-        if(NULL == tmpBuffer) {
-             PyErr_SetString(PyExc_Exception,"PyMNNTensor_init: ndarry failed to get buffer data");
-             return -1;
+            else if (gNumpyValid && PyArray_Check(data)) {
+                if(dataSize != PyArray_Size(data)) {
+                    PyMNN_ERROR_LOG("PyMNNTensor_init: numpy array size does not match shape requirement");
+                    return -1;
+                }
+            }
+#endif
+            else {
+                PyMNN_ERROR_LOG("PyMNNTensor_init: data is not tuple/list/bytes/ndarray");
+                return -1;
+            }
+            int64_t total_len = dataSize;
+            pData = toPtr(data, dtype, total_len);
         }
-        memcpy(pData, tmpBuffer, dataSize * itemsize);
-        Py_XDECREF(data_cont);
-     }
- #endif
+        if(NULL == pData) {
+            PyMNN_ERROR_LOG("PyMNNTensor_init: data load failed");
+            return -1;
+        }
+    } else {
+        // no data input, set all zeros
+        // pycapsule/int_addr input, copy data
+        pData = malloc(dataSize * itemsize);
+        if (data) {
+            void* srcPtr = nullptr;
+            if (PyCapsule_CheckExact(data)) {
+                srcPtr = PyCapsule_GetPointer(data, NULL);
+            } else {
+                srcPtr = PyLong_AsVoidPtr(data);
+            }
+            if (srcPtr == nullptr) {
+                PyMNN_ERROR_LOG("PyMNNTensor_init: PyCapsule/int_addr pointer is null.");
+                return -1;
+            }
+            memcpy(pData, srcPtr, dataSize * itemsize);
+        } else {
+            memset(pData, 0, dataSize * itemsize);
+        }
+    }
     Tensor *tensor = Tensor::create(vShape
                                , htt
                                , pData
                                , (Tensor::DimensionType)dimensionType
                                );
     if (!tensor) {
-        PyErr_SetString(PyExc_Exception,
-                        "PyMNNTensor_create: Tensor create failed");
+        PyMNN_ERROR_LOG("PyMNNTensor_create: Tensor create failed");
         return -1;
     }
     self->tensor = tensor;
     self->owner = 1;
     return 0;
 }
+static PyObject* PyMNNTensor_repr(PyObject *self) {
+    auto tensor = ((PyMNNTensor*)self)->tensor;
+    if (tensor == nullptr || tensor->host<void>() == nullptr) {
+        return toPyObj("array([])");
+    }
+#ifdef PYMNN_NUMPY_USABLE
+    auto content = PyMNNTensor_getNumpyData(((PyMNNTensor*)self), NULL);
+#else
+    auto content = PyMNNVar_read_as_tuple((PyMNNVar*)self, NULL);
+#endif
+    auto reprfunc = PyObject_GetAttrString(content, "__repr__");
+    auto str = PyEval_CallObject(reprfunc, NULL);
+    Py_DECREF(content);
+    Py_DECREF(reprfunc);
+    return str;
+}
 #ifdef PYMNN_NUMPY_USABLE
 static PyObject* PyMNNTensor_fromNumpy(PyMNNTensor *self, PyObject *args) {
+    if (!gNumpyValid) {
+        PyErr_SetString(PyExc_Exception,"PyMNNTensor_fromNumpy: numpy not valid");
+        return NULL;
+    }
     PyObject *data;
     if (!PyArg_ParseTuple(args, "O", &data)) {
         return NULL;
@@ -1612,6 +1796,10 @@ static PyObject* PyMNNTensor_getData(PyMNNTensor *self, PyObject *args) {
 
 #ifdef PYMNN_NUMPY_USABLE
 static PyObject* PyMNNTensor_getNumpyData(PyMNNTensor *self, PyObject *args) {
+    if (!gNumpyValid) {
+        PyErr_SetString(PyExc_Exception,"PyMNNTensor_getNumpyData: numpy not valid");
+        return NULL;
+    }
     if (self->tensor) {
         halide_type_t t = self->tensor->getType();
         std::vector<npy_intp> npy_dims;
@@ -1809,8 +1997,12 @@ static PyObject* PyMNNCVImageProcess_convert(PyMNNCVImageProcess *self, PyObject
         return NULL;
     }
 
-    if (PyLong_Check(source)) {
-        ErrorCode ret = self->imageProcess->convert(reinterpret_cast<const uint8_t *>(PyLong_AsLong(source)),
+    if (isInt(source)) {
+        auto ptr = PyLong_AsVoidPtr(source);
+        if (ptr == NULL) {
+            Py_RETURN_NONE;
+        }
+        ErrorCode ret = self->imageProcess->convert(reinterpret_cast<const uint8_t *>(ptr),
                                                     iw, ih, stride,
                                                     ((PyMNNTensor *)dest)->tensor);
         return PyLong_FromLong(ret);
@@ -1838,7 +2030,7 @@ static PyObject* PyMNNCVImageProcess_convert(PyMNNCVImageProcess *self, PyObject
         return PyLong_FromLong(ret);
     }
 #ifdef PYMNN_NUMPY_USABLE
-    else if(PyArray_Check(source)) {
+    else if(gNumpyValid && PyArray_Check(source)) {
         // Array Data
         int npy_type = PyArray_TYPE(source);
         if(npy_type != NPY_UINT8) {
@@ -1926,7 +2118,7 @@ static PyObject* PyMNNCVImageProcess_createImageTensor(PyMNNCVImageProcess *self
         return NULL;
     }
 
-    PyMNNTensor *t = (PyMNNTensor *)PyObject_Call(f, PyTuple_New(0), NULL);
+    PyMNNTensor *t = (PyMNNTensor *)PyObject_CallObject(f, NULL);
     if (!t) {
         PyErr_SetString(PyExc_Exception,
                         "PyMNNCVImageProcess_createImageTensor: create image tensor failed");
@@ -1935,6 +2127,7 @@ static PyObject* PyMNNCVImageProcess_createImageTensor(PyMNNCVImageProcess *self
 
     t->tensor = tensor;
     t->owner = 1;
+    Py_XDECREF(f);
     return (PyObject *)t;
 }
 
@@ -1949,46 +2142,80 @@ static PyObject* PyMNNCVImageProcess_setPadding(PyMNNCVImageProcess *self, PyObj
 
 /// MNN CVMatrix implementation
 bool isMatrix(PyObject* obj) {
-    return PyObject_IsInstance(obj, (PyObject*)&PyMNNCVMatrixType);
+    return PyObject_IsInstance(obj, (PyObject*)PyType_FindTLSType(&PyMNNCVMatrixType));
 }
 CV::Matrix toMatrix(PyObject* obj) {
     return *(((PyMNNCVMatrix*)obj)->matrix);
 }
 PyObject* toPyObj(CV::Matrix m) {
-    PyMNNCVMatrix *ret = (PyMNNCVMatrix *)PyObject_Call((PyObject*)&PyMNNCVMatrixType, PyTuple_New(0), NULL);
+    PyMNNCVMatrix *ret = (PyMNNCVMatrix *)PyObject_CallObject((PyObject*)PyType_FindTLSType(&PyMNNCVMatrixType), NULL);
     ret->matrix = new CV::Matrix();
     *(ret->matrix) = m;
     return (PyObject*)ret;
 }
-bool isSize(PyObject* obj) {
-    return (isInts(obj) && toInts(obj).size() == 2);
-}
-CV::Size toSize(PyObject* obj) {
-    auto vals = toInts(obj);
-    MNN_ASSERT(val.size() == 2);
-    return CV::Size(vals[0], vals[1]);
-}
+
 bool isPoint(PyObject* obj) {
-    return (isFloats(obj) && toFloats(obj).size() == 2);
+    return (isFloats(obj) && toFloats(obj).size() == 2) ||
+           (isInts(obj) && toInts(obj).size() == 2);
 }
 CV::Point toPoint(PyObject* obj) {
-    auto vals = toFloats(obj);
-    MNN_ASSERT(val.size() == 2);
     CV::Point point;
-    point.set(vals[0], vals[1]);
+    if (isFloats(obj)) {
+        auto vals = toFloats(obj);
+        MNN_ASSERT(vals.size() == 2);
+        point.set(vals[0], vals[1]);
+    } else if (isInts(obj)) {
+        auto vals = toInts(obj);
+        MNN_ASSERT(vals.size() == 2);
+        point.set(vals[0], vals[1]);
+    }
     return point;
 }
 bool isPoints(PyObject* obj) {
-    return (isFloats(obj) && toFloats(obj).size() % 2 == 0);
+    return (isFloats(obj) && toFloats(obj).size() % 2 == 0) ||
+           (isInts(obj) && toInts(obj).size() % 2 == 0) || isVar(obj);
 }
 std::vector<CV::Point> toPoints(PyObject* obj) {
-    auto vals = toFloats(obj);
-    MNN_ASSERT(val.size() % 2 == 0);
-    std::vector<CV::Point> points(vals.size() / 2);
-    for (int i = 0; i < points.size(); i++) {
-        points[i].set(vals[i*2], vals[i*2+1]);
+    if (isFloats(obj)) {
+        auto vals = toFloats(obj);
+        MNN_ASSERT(vals.size() % 2 == 0);
+        std::vector<CV::Point> points(vals.size() / 2);
+        for (int i = 0; i < points.size(); i++) {
+            points[i].set(vals[i*2], vals[i*2+1]);
+        }
+        return points;
     }
-    return points;
+    if (isInts(obj)) {
+        auto vals = toInts(obj);
+        MNN_ASSERT(vals.size() % 2 == 0);
+        std::vector<CV::Point> points(vals.size() / 2);
+        for (int i = 0; i < points.size(); i++) {
+            points[i].set(vals[i*2], vals[i*2+1]);
+        }
+        return points;
+    }
+    if (isVar(obj)) {
+        auto vals = toVar(obj);
+        auto info = vals->getInfo();
+        auto size = info->size;
+        MNN_ASSERT(size % 2 == 0);
+        std::vector<CV::Point> points(size / 2);
+        if (info->type == halide_type_of<float>()) {
+            auto ptr = vals->readMap<float>();
+            for (int i = 0; i < points.size(); i++) {
+                points[i].set(ptr[i*2], ptr[i*2+1]);
+            }
+        } else if (info->type == halide_type_of<int>()) {
+            auto ptr = vals->readMap<int>();
+            for (int i = 0; i < points.size(); i++) {
+                points[i].set(ptr[i*2], ptr[i*2+1]);
+            }
+        } else {
+            PyMNN_ERROR_LOG("Point data type must be int32 or float32.");
+        }
+        return points;
+    }
+    return {};
 }
 PyObject* toPyObj(std::vector<CV::Point> _points) {
     std::vector<float> points(_points.size() * 2);
@@ -2222,6 +2449,7 @@ static PyObject* PyMNNCVMatrix_read(PyMNNCVMatrix *self) {
 }
 static PyObject* PyMNNOpInfo_getName(PyMNNOpInfo *self, PyObject *args);
 static PyObject* PyMNNOpInfo_getType(PyMNNOpInfo *self, PyObject *args);
+static PyObject* PyMNNOpInfo_getFlops(PyMNNOpInfo *self, PyObject *args);
 
 static void PyMNNOpInfo_dealloc(PyMNNOpInfo *self);
 static PyObject* PyMNNOpInfo_new(struct _typeobject *type, PyObject *args, PyObject *kwds);
@@ -2230,6 +2458,7 @@ static int PyMNNOpInfo_init(PyMNNOpInfo *info, PyObject *args, PyObject *kwds);
 static PyMethodDef PyMNNOpInfo_methods[] = {
     {"getName", (PyCFunction)PyMNNOpInfo_getName, METH_VARARGS, "get op name"},
     {"getType", (PyCFunction)PyMNNOpInfo_getType, METH_VARARGS, "get op type"},
+    {"getFlops", (PyCFunction)PyMNNOpInfo_getFlops, METH_VARARGS, "get op flops"},
     {NULL}  /* Sentinel */
 };
 static PyObject* PyMNNOpInfo_getName(PyMNNOpInfo *self, PyObject *args) {
@@ -2245,6 +2474,13 @@ static PyObject* PyMNNOpInfo_getType(PyMNNOpInfo *self, PyObject *args) {
         type = char2Object(self->opInfo->type().c_str());
     }
     return type;
+}
+static PyObject* PyMNNOpInfo_getFlops(PyMNNOpInfo *self, PyObject *args) {
+    PyObject *flops = NULL;
+    if (self->opInfo) {
+        flops = toPyObj(self->opInfo->flops());
+    }
+    return flops;
 }
 static PyTypeObject PyMNNOpInfoType = {
     PyVarObject_HEAD_INIT(NULL, 0)
@@ -2299,7 +2535,7 @@ static void PyMNNOpInfo_dealloc(PyMNNOpInfo *self) {
 }
 
 #ifdef PYMNN_TRAIN_API
-static PyObject* PyMN_get_model_uuid(PyObject *self, PyObject *args) {
+static PyObject* PyMNN_get_model_uuid(PyObject *self, PyObject *args) {
     const char* modelFile;
     if (!PyArg_ParseTuple(args, "s", &modelFile)) {
         printf("PyArg_ParseTuple Error\n");
@@ -2308,11 +2544,15 @@ static PyObject* PyMN_get_model_uuid(PyObject *self, PyObject *args) {
     return toPyObj(HelperFuncs::getModelUUID(modelFile));
 }
 #endif
+static PyObject* PyMNN_version(PyObject *self, PyObject *args) {
+    return toPyObj(MNN::getVersion());
+}
 /// module init
 static PyMethodDef module_methods[] = {
 #ifdef PYMNN_TRAIN_API
-    {"get_model_uuid", (PyCFunction)PyMN_get_model_uuid, METH_VARARGS, "get model's uuid"},
+    {"get_model_uuid", (PyCFunction)PyMNN_get_model_uuid, METH_VARARGS, "get model's uuid"},
 #endif
+    {"version", (PyCFunction)PyMNN_version, METH_VARARGS, "get MNN version number"},
     {NULL, NULL, 0, NULL}
 };
 
@@ -2404,9 +2644,10 @@ PyMODINIT_FUNC MOD_INIT_FUNC(void) {
         ERROR_RETURN
     }
 #ifdef PYMNN_NUMPY_USABLE
+    gNumpyValid = true;
     if(_import_array() < 0) {
         PyErr_SetString(PyExc_Exception, "initMNN: init numpy failed");
-        ERROR_RETURN
+        gNumpyValid = false;
     }
 #endif
 
@@ -2482,9 +2723,10 @@ PyMODINIT_FUNC MOD_INIT_FUNC(void) {
     // for expr multi-thread
     BackendConfig bnConfig;
     auto threadExecutor = Executor::newExecutor(MNN_FORWARD_CPU, bnConfig, 1);
+    // close lazy evaluation in python for speed and memory
+    threadExecutor->lazyEval = false;
 #if TARGET_OS_IPHONE
-    // iOS is not support thread local
-    static ExecutorScope scope(threadExecutor);
+    tlsData->scope = new ExecutorScope(threadExecutor);
 #else
     static thread_local ExecutorScope scope(threadExecutor);
 #endif
@@ -2494,7 +2736,7 @@ PyMODINIT_FUNC MOD_INIT_FUNC(void) {
         PyErr_SetString(PyExc_Exception, "initMNN.expr: PyType_Ready PyMNNVarType failed");
         ERROR_RETURN
     }
-    PyModule_AddObject(expr_module, "Var", (PyObject *)&PyMNNVarType);
+    PyModule_AddObject(expr_module, "Var", (PyObject *)PyType_FindTLSType(&PyMNNVarType));
     // def enum
     def_data_format(expr_module);
     def_dtype(expr_module);
@@ -2514,6 +2756,7 @@ PyMODINIT_FUNC MOD_INIT_FUNC(void) {
     // _nn module
     auto nn_module = def_submodule(m, "_nn");
     def__Module(nn_module);
+    def_RuntimeManager(nn_module);
     def_methods(nn_module, NN)
 #ifdef PYMNN_TRAIN_API
     // _optim module
@@ -2537,16 +2780,6 @@ PyMODINIT_FUNC MOD_INIT_FUNC(void) {
 #ifdef PYMNN_OPENCV_API
     // cv submodule
     auto cv_module = def_submodule(m, "cv");
-    def_Format(cv_module);
-#ifdef PYMNN_IMGCODECS
-    def_ImreadModes(cv_module);
-#endif
-    def_ColorConversionCodes(cv_module);
-    def_InterpolationFlags(cv_module);
-    def_BorderTypes(cv_module);
-    def_ThresholdTypes(cv_module);
-    def_RetrievalModes(cv_module);
-    def_ContourApproximationModes(cv_module);
     // add methods of cv
     constexpr int cv_method_num = sizeof(PyMNNCV_methods) / sizeof(PyMethodDef);
     for (int i = 0; i < cv_method_num; i++) {
@@ -2575,4 +2808,11 @@ static auto registerMNN = []() {
     loadMNN();
     return true;
 }();
+#endif
+
+#if defined(PYMNN_USE_ALINNPYTHON)
+extern "C" MNN_PUBLIC void* memoryToVar(const void* ptr, int h, int w, int c, int type) {
+    auto var = Express::_Const(ptr, {h, w, c}, NHWC, dtype2htype(static_cast<DType>(type)));
+    return reinterpret_cast<void*>(toPyObj(var));
+}
 #endif

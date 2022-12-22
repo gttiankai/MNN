@@ -15,25 +15,6 @@ CoreMLRaster::CoreMLRaster(MNN::Backend *b, const MNN::Op *op, const std::vector
     initLayer();
 }
 
-static bool isTranspose(const Tensor::InsideDescribe::Region& region) {
-    int srcOne = -1, dstOne = -1;
-    for (int i = 0; i < 3; i++) {
-        if (region.src.stride[i] == 1 && region.size[i] != 1) {
-            if (srcOne >= 0 || region.size[i] < 4) {
-                return false;
-            }
-            srcOne = i;
-        }
-        if (region.dst.stride[i] == 1 && region.size[i] != 1) {
-            if (dstOne >= 0 || region.size[i] < 4) {
-                return false;
-            }
-            dstOne = i;
-        }
-    }
-    return srcOne >= 0 && dstOne >= 0 && srcOne != dstOne;
-}
-
 bool CoreMLRaster::buildReshape(CoreML__Specification__NeuralNetworkLayer* layer, const Tensor* input, const Tensor* output) {
     mCoreMLBackend->setLayerName(layer, "Reshape");
     layer->layer_case = CORE_ML__SPECIFICATION__NEURAL_NETWORK_LAYER__LAYER_RESHAPE_STATIC;
@@ -232,6 +213,19 @@ bool CoreMLRaster::buildSlice(CoreML__Specification__NeuralNetworkLayer* layer, 
     return true;
 }
 
+bool CoreMLRaster::buildDepthToSpace(CoreML__Specification__NeuralNetworkLayer* layer, const Tensor* input, const Tensor* output) {
+    int blockSize = output->height() / input->height();
+    mCoreMLBackend->setLayerName(layer, "DepthToSpace");
+    layer->layer_case = CORE_ML__SPECIFICATION__NEURAL_NETWORK_LAYER__LAYER_REORGANIZE_DATA;
+    layer->reorganizedata = mCoreMLBackend->create<CoreML__Specification__ReorganizeDataLayerParams>();
+    core_ml__specification__reorganize_data_layer_params__init(layer->reorganizedata);
+    layer->reorganizedata->blocksize = blockSize;
+    // layer->reorganizedata->mode = CORE_ML__SPECIFICATION__REORGANIZE_DATA_LAYER_PARAMS__REORGANIZATION_TYPE__DEPTH_TO_SPACE;
+    layer->reorganizedata->mode = CORE_ML__SPECIFICATION__REORGANIZE_DATA_LAYER_PARAMS__REORGANIZATION_TYPE__PIXEL_SHUFFLE;
+    mCoreMLBackend->setLayerInputs(layer, {mCoreMLBackend->getTensorName(input)});
+    return true;
+}
+
 bool CoreMLRaster::rasterOptimization(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) {
     const auto& regions = TensorUtils::getDescribe(inputs[0])->regions;
     const auto region = regions[0];
@@ -251,7 +245,7 @@ bool CoreMLRaster::rasterOptimization(const std::vector<Tensor *> &inputs, const
                 return buildReshape(mLayer_, region.origin, outputs[0]);
             }
             // transpose
-            if (isTranspose(region)) {
+            if (TensorUtils::isTransposeRegion(region)) {
                 return buildPermute(mLayer_, region.origin, outputs[0]);
             }
         }
@@ -267,6 +261,9 @@ bool CoreMLRaster::rasterOptimization(const std::vector<Tensor *> &inputs, const
             // return buildSlice(mLayer_, region.origin, outputs[0]);
         }
         return false;
+    }
+    if (TensorUtils::isDepthToSpaceRegions) {
+        return buildDepthToSpace(mLayer_, region.origin, outputs[0]);
     }
     // region_size > 1: concat
     {
@@ -366,5 +363,5 @@ ErrorCode CoreMLRaster::onResize(const std::vector<Tensor *> &inputs, const std:
     return NO_ERROR;
 }
 
-CoreMLCreatorRegister<TypedCreator<CoreMLRaster>> __raster_op(OpType_Raster);
+REGISTER_COREML_OP_CREATOR(CoreMLRaster, OpType_Raster)
 } // namespace MNN

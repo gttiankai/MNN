@@ -11,6 +11,8 @@
 #endif
 #include "common.h"
 
+#define PARSE(obj, default, func) ((obj) == nullptr ? (default) : func(obj))
+
 using namespace std;
 typedef vector<int> INTS;
 #define PyMNN_ERROR_LOG(x) PyErr_SetString(PyExc_TypeError, x);
@@ -225,13 +227,16 @@ inline int getnpysize(int npy_type) {
         return 4;
       case NPY_DOUBLE:
         return 8;
-      case NPY_INT:
-        return 4;
       case NPY_INT64:
         return 8;
       case NPY_UINT8:
         return 1;
       default:
+        // NPY_INT(np.int) and NPY_INT32(np.int32) may be different enum on some platform
+        // use `if` instead of `switch case`(when NPY_INT is same as NPY_INT32, two same case value is not support)
+        if (npy_type == NPY_INT || npy_type == NPY_INT32) {
+            return 4;
+        }
         PyMNN_ERROR_LOG("does not support this npy_type");
         return 0;
     }
@@ -249,7 +254,7 @@ inline int getitemsize(int dtype, int npy_type) {
         }
         return 8;
       case DType_INT32:
-        if(npy_type != NPY_INT) {
+        if(npy_type != NPY_INT && npy_type != NPY_INT32) {
           PyMNN_ERROR_LOG("numpy type does not match");
         }
         return 4;
@@ -342,7 +347,10 @@ template <typename K, PyObject*(*FuncK)(K)=toPyObj,
 static PyObject* toPyObj(map<K, V> values) {
     PyObject* obj = PyDict_New();
     for (auto iter = values.begin(); iter != values.end(); iter++) {
-        PyDict_SetItem(obj, FuncK(iter->first), FuncV(iter->second));
+        auto key = FuncK(iter->first), val = FuncV(iter->second);
+        PyDict_SetItem(obj, key, val);
+        Py_XDECREF(key);
+        Py_XDECREF(val);
     }
     return obj;
 }
@@ -360,12 +368,28 @@ static inline bool isInt(PyObject* obj) {
 static inline bool isFloat(PyObject* obj) {
     return PyFloat_Check(obj);
 }
+static inline bool isNone(PyObject* obj) {
+    return (obj == Py_None);
+}
+static inline bool isPySequence(PyObject* obj) {
+    // ndarray in PySequence_Check is true;
+    // when PYMNN_NUMPY_USABLE is close will get some wrong judge
+    // use isPySequence replace PySequence_Check
+    return PyTuple_Check(obj) || PyList_Check(obj) || PyBytes_Check(obj);
+}
+static inline int PySequenceSize(PyObject* obj) {
+    if (PyTuple_Check(obj)) return PyTuple_Size(obj);
+    if (PyList_Check(obj)) return PyList_Size(obj);
+    if (PyBytes_Check(obj)) return PyBytes_Size(obj);
+    return 0;
+}
 static inline bool isVals(PyObject* obj) {
     return
 #ifdef PYMNN_NUMPY_USABLE
     PyArray_Check(obj) ||
 #endif
-    PySequence_Check(obj);
+    PyCapsule_CheckExact(obj) ||
+    isPySequence(obj);
 }
 template <bool (*Func)(PyObject*)>
 static bool isVec(PyObject* obj) {
@@ -438,6 +462,7 @@ static vector<T> toVec(PyObject* obj) {
         }
         return values;
     }
+    values.push_back(Func(obj));
     return values;
 }
 static inline std::vector<int> toInts(PyObject* obj) {
@@ -586,188 +611,185 @@ static void* toPtr(PyObject *obj, DType dtype, int64_t& total_length, void* data
 // just support COND = 0 or 1
 #define arg_if(COND, THEN, ELSE) arg_concat(arg_if_, COND)(THEN, ELSE)
 #define expand_item_0(...)
-#define expand_item_1(macro, context, key, value, ITEMS...) \
+#define expand_item_1(macro, context, key, value, ...) \
     macro(context, key, value)
-#define expand_item_2(macro, context, key, value, ITEMS...) \
+#define expand_item_2(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_1(macro, context, ITEMS)
-#define expand_item_3(macro, context, key, value, ITEMS...) \
+    expand_item_1(macro, context, __VA_ARGS__)
+#define expand_item_3(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_2(macro, context, ITEMS)
-#define expand_item_4(macro, context, key, value, ITEMS...) \
+    expand_item_2(macro, context, __VA_ARGS__)
+#define expand_item_4(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_3(macro, context, ITEMS)
-#define expand_item_5(macro, context, key, value, ITEMS...) \
+    expand_item_3(macro, context, __VA_ARGS__)
+#define expand_item_5(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_4(macro, context, ITEMS)
-#define expand_item_6(macro, context, key, value, ITEMS...) \
+    expand_item_4(macro, context, __VA_ARGS__)
+#define expand_item_6(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_5(macro, context, ITEMS)
-#define expand_item_7(macro, context, key, value, ITEMS...) \
+    expand_item_5(macro, context, __VA_ARGS__)
+#define expand_item_7(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_6(macro, context, ITEMS)
-#define expand_item_8(macro, context, key, value, ITEMS...) \
+    expand_item_6(macro, context, __VA_ARGS__)
+#define expand_item_8(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_7(macro, context, ITEMS)
-#define expand_item_9(macro, context, key, value, ITEMS...) \
+    expand_item_7(macro, context, __VA_ARGS__)
+#define expand_item_9(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_8(macro, context, ITEMS)
-#define expand_item_10(macro, context, key, value, ITEMS...) \
+    expand_item_8(macro, context, __VA_ARGS__)
+#define expand_item_10(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_9(macro, context, ITEMS)
-#define expand_item_11(macro, context, key, value, ITEMS...) \
+    expand_item_9(macro, context, __VA_ARGS__)
+#define expand_item_11(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_10(macro, context, ITEMS)
-#define expand_item_12(macro, context, key, value, ITEMS...) \
+    expand_item_10(macro, context, __VA_ARGS__)
+#define expand_item_12(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_11(macro, context, ITEMS)
-#define expand_item_13(macro, context, key, value, ITEMS...) \
+    expand_item_11(macro, context, __VA_ARGS__)
+#define expand_item_13(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_12(macro, context, ITEMS)
-#define expand_item_14(macro, context, key, value, ITEMS...) \
+    expand_item_12(macro, context, __VA_ARGS__)
+#define expand_item_14(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_13(macro, context, ITEMS)
-#define expand_item_15(macro, context, key, value, ITEMS...) \
+    expand_item_13(macro, context, __VA_ARGS__)
+#define expand_item_15(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_14(macro, context, ITEMS)
-#define expand_item_16(macro, context, key, value, ITEMS...) \
+    expand_item_14(macro, context, __VA_ARGS__)
+#define expand_item_16(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_15(macro, context, ITEMS)
-#define expand_item_17(macro, context, key, value, ITEMS...) \
+    expand_item_15(macro, context, __VA_ARGS__)
+#define expand_item_17(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_16(macro, context, ITEMS)
-#define expand_item_18(macro, context, key, value, ITEMS...) \
+    expand_item_16(macro, context, __VA_ARGS__)
+#define expand_item_18(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_17(macro, context, ITEMS)
-#define expand_item_19(macro, context, key, value, ITEMS...) \
+    expand_item_17(macro, context, __VA_ARGS__)
+#define expand_item_19(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_18(macro, context, ITEMS)
-#define expand_item_20(macro, context, key, value, ITEMS...) \
+    expand_item_18(macro, context, __VA_ARGS__)
+#define expand_item_20(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_19(macro, context, ITEMS)
-#define expand_item_21(macro, context, key, value, ITEMS...) \
+    expand_item_19(macro, context, __VA_ARGS__)
+#define expand_item_21(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_20(macro, context, ITEMS)
-#define expand_item_22(macro, context, key, value, ITEMS...) \
+    expand_item_20(macro, context, __VA_ARGS__)
+#define expand_item_22(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_21(macro, context, ITEMS)
-#define expand_item_23(macro, context, key, value, ITEMS...) \
+    expand_item_21(macro, context, __VA_ARGS__)
+#define expand_item_23(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_22(macro, context, ITEMS)
-#define expand_item_24(macro, context, key, value, ITEMS...) \
+    expand_item_22(macro, context, __VA_ARGS__)
+#define expand_item_24(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_23(macro, context, ITEMS)
-#define expand_item_24(macro, context, key, value, ITEMS...) \
+    expand_item_23(macro, context, __VA_ARGS__)
+#define expand_item_25(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_23(macro, context, ITEMS)
-#define expand_item_25(macro, context, key, value, ITEMS...) \
+    expand_item_24(macro, context, __VA_ARGS__)
+#define expand_item_26(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_24(macro, context, ITEMS)
-#define expand_item_26(macro, context, key, value, ITEMS...) \
+    expand_item_25(macro, context, __VA_ARGS__)
+#define expand_item_27(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_25(macro, context, ITEMS)
-#define expand_item_27(macro, context, key, value, ITEMS...) \
+    expand_item_26(macro, context, __VA_ARGS__)
+#define expand_item_28(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_26(macro, context, ITEMS)
-#define expand_item_28(macro, context, key, value, ITEMS...) \
+    expand_item_27(macro, context, __VA_ARGS__)
+#define expand_item_29(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_27(macro, context, ITEMS)
-#define expand_item_29(macro, context, key, value, ITEMS...) \
+    expand_item_28(macro, context, __VA_ARGS__)
+#define expand_item_30(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_28(macro, context, ITEMS)
-#define expand_item_30(macro, context, key, value, ITEMS...) \
+    expand_item_29(macro, context, __VA_ARGS__)
+#define expand_item_31(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_29(macro, context, ITEMS)
-#define expand_item_31(macro, context, key, value, ITEMS...) \
+    expand_item_30(macro, context, __VA_ARGS__)
+#define expand_item_32(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_30(macro, context, ITEMS)
-#define expand_item_32(macro, context, key, value, ITEMS...) \
+    expand_item_31(macro, context, __VA_ARGS__)
+#define expand_item_33(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_31(macro, context, ITEMS)
-#define expand_item_33(macro, context, key, value, ITEMS...) \
+    expand_item_32(macro, context, __VA_ARGS__)
+#define expand_item_34(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_32(macro, context, ITEMS)
-#define expand_item_34(macro, context, key, value, ITEMS...) \
+    expand_item_33(macro, context, __VA_ARGS__)
+#define expand_item_35(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_33(macro, context, ITEMS)
-#define expand_item_35(macro, context, key, value, ITEMS...) \
+    expand_item_34(macro, context, __VA_ARGS__)
+#define expand_item_36(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_34(macro, context, ITEMS)
-#define expand_item_36(macro, context, key, value, ITEMS...) \
+    expand_item_35(macro, context, __VA_ARGS__)
+#define expand_item_37(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_35(macro, context, ITEMS)
-#define expand_item_37(macro, context, key, value, ITEMS...) \
+    expand_item_36(macro, context, __VA_ARGS__)
+#define expand_item_38(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_36(macro, context, ITEMS)
-#define expand_item_38(macro, context, key, value, ITEMS...) \
+    expand_item_37(macro, context, __VA_ARGS__)
+#define expand_item_39(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_37(macro, context, ITEMS)
-#define expand_item_39(macro, context, key, value, ITEMS...) \
+    expand_item_38(macro, context, __VA_ARGS__)
+#define expand_item_40(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_38(macro, context, ITEMS)
-#define expand_item_40(macro, context, key, value, ITEMS...) \
+    expand_item_39(macro, context, __VA_ARGS__)
+#define expand_item_41(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_39(macro, context, ITEMS)
-#define expand_item_41(macro, context, key, value, ITEMS...) \
+    expand_item_40(macro, context, __VA_ARGS__)
+#define expand_item_42(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_40(macro, context, ITEMS)
-#define expand_item_42(macro, context, key, value, ITEMS...) \
+    expand_item_41(macro, context, __VA_ARGS__)
+#define expand_item_43(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_41(macro, context, ITEMS)
-#define expand_item_43(macro, context, key, value, ITEMS...) \
+    expand_item_42(macro, context, __VA_ARGS__)
+#define expand_item_44(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_42(macro, context, ITEMS)
-#define expand_item_44(macro, context, key, value, ITEMS...) \
+    expand_item_43(macro, context, __VA_ARGS__)
+#define expand_item_45(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_43(macro, context, ITEMS)
-#define expand_item_45(macro, context, key, value, ITEMS...) \
+    expand_item_44(macro, context, __VA_ARGS__)
+#define expand_item_46(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_44(macro, context, ITEMS)
-#define expand_item_46(macro, context, key, value, ITEMS...) \
+    expand_item_45(macro, context, __VA_ARGS__)
+#define expand_item_47(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_45(macro, context, ITEMS)
-#define expand_item_47(macro, context, key, value, ITEMS...) \
+    expand_item_46(macro, context, __VA_ARGS__)
+#define expand_item_48(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_46(macro, context, ITEMS)
-#define expand_item_48(macro, context, key, value, ITEMS...) \
+    expand_item_47(macro, context, __VA_ARGS__)
+#define expand_item_49(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_47(macro, context, ITEMS)
-#define expand_item_49(macro, context, key, value, ITEMS...) \
+    expand_item_48(macro, context, __VA_ARGS__)
+#define expand_item_50(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_48(macro, context, ITEMS)
-#define expand_item_50(macro, context, key, value, ITEMS...) \
+    expand_item_49(macro, context, __VA_ARGS__)
+#define expand_item_51(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_49(macro, context, ITEMS)
-#define expand_item_51(macro, context, key, value, ITEMS...) \
+    expand_item_50(macro, context, __VA_ARGS__)
+#define expand_item_52(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_50(macro, context, ITEMS)
-#define expand_item_52(macro, context, key, value, ITEMS...) \
+    expand_item_51(macro, context, __VA_ARGS__)
+#define expand_item_53(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_51(macro, context, ITEMS)
-#define expand_item_53(macro, context, key, value, ITEMS...) \
+    expand_item_52(macro, context, __VA_ARGS__)
+#define expand_item_54(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_52(macro, context, ITEMS)
-#define expand_item_54(macro, context, key, value, ITEMS...) \
+    expand_item_53(macro, context, __VA_ARGS__)
+#define expand_item_55(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_53(macro, context, ITEMS)
-#define expand_item_55(macro, context, key, value, ITEMS...) \
+    expand_item_54(macro, context, __VA_ARGS__)
+#define expand_item_56(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_54(macro, context, ITEMS)
-#define expand_item_56(macro, context, key, value, ITEMS...) \
+    expand_item_55(macro, context, __VA_ARGS__)
+#define expand_item_57(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_55(macro, context, ITEMS)
-#define expand_item_57(macro, context, key, value, ITEMS...) \
+    expand_item_56(macro, context, __VA_ARGS__)
+#define expand_item_58(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_56(macro, context, ITEMS)
-#define expand_item_58(macro, context, key, value, ITEMS...) \
+    expand_item_57(macro, context, __VA_ARGS__)
+#define expand_item_59(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_57(macro, context, ITEMS)
-#define expand_item_59(macro, context, key, value, ITEMS...) \
+    expand_item_58(macro, context, __VA_ARGS__)
+#define expand_item_60(macro, context, key, value, ...) \
     macro(context, key, value) \
-    expand_item_58(macro, context, ITEMS)
-#define expand_item_60(macro, context, key, value, ITEMS...) \
-    macro(context, key, value) \
-    expand_item_59(macro, context, ITEMS)
+    expand_item_59(macro, context, __VA_ARGS__)
 #define expand_items(macro, context, ...) \
     arg_concat(expand_item_, arg_half_size(__VA_ARGS__))(macro, context, __VA_ARGS__)
 //------------------------ macro_utils end -------------------------
@@ -790,22 +812,11 @@ static PyObject* PyEnum_new(struct _typeobject *type, PyObject *args, PyObject *
 Py_hash_t PyEnum_hash(PyObject* x) {
     return static_cast<Py_hash_t>(((PyMNNEnum*)x)->value);
 }
-PyObject *PyEnum_richcompare(PyObject *self, PyObject *other, int op) {
-    int l = ((PyMNNEnum*)self)->value, r = ((PyMNNEnum*)other)->value;
-    switch (op) {
-        case Py_LT: return toPyObj(l < r);
-        case Py_LE: return toPyObj(l <= r);
-        case Py_EQ: return toPyObj(l == r);
-        case Py_NE: return toPyObj(l != r);
-        case Py_GT: return toPyObj(l > r);
-        case Py_GE: return toPyObj(l >= r);
-    }
-    Py_RETURN_NONE;
-}
 static PyObject* toPyEnum(PyObject* type, int val) {
     auto args = PyTuple_New(1);
     PyTuple_SetItem((PyObject*)args, 0, PyLong_FromLong((long)val));
     auto e = PyObject_Call(type, args, NULL);
+    Py_XDECREF(args);
     if (!e) {
         PyErr_SetString(PyExc_Exception,
                         "toEnum: PyMNNEnum instance create failed");
@@ -821,15 +832,17 @@ static T toEnum(PyObject* e) {
     return static_cast<T>(((PyMNNEnum*)e)->value);
 }
 #define declare_map_item(_, key, value)  { static_cast<int>(key), value },
-#define register_item(context, key, value) \
-    PyObject_SetAttrString(scope, value, toPyObj(key)); \
-    PyDict_SetItemString(dict, value, toPyObj(key));
+#define register_item(context, key, value) { \
+    auto pykey = toPyObj(key); \
+    PyObject_SetAttrString(scope, value, pykey); \
+    PyDict_SetItemString(dict, value, pykey); \
+    Py_XDECREF(pykey); }
 
-#define def_enum_repr(NAME, ITEMS...) \
+#define def_enum_repr(NAME, ...) \
 static PyObject* PyEnum_##NAME##_repr(PyObject *self) { \
     std::string str = #NAME "."; \
     std::map<int, const char*> items = { \
-        expand_items(declare_map_item, _, ITEMS) \
+        expand_items(declare_map_item, _, __VA_ARGS__) \
     }; \
     int key = ((PyMNNEnum*)self)->value; \
     auto iter = items.find(key); \
@@ -839,22 +852,23 @@ static PyObject* PyEnum_##NAME##_repr(PyObject *self) { \
 
 #define def_enum_to(NAME, TYPE) \
 static PyObject* toPyObj(TYPE value) { \
-    return toPyEnum((PyObject*)&PyEnum_##NAME, static_cast<int>(value)); \
+    return toPyEnum((PyObject*)PyType_FindTLSType(&PyEnum_##NAME), static_cast<int>(value)); \
 }
 
-#define def_enum_register(NAME, ITEMS...) \
+#define def_enum_register(NAME, ...) \
 static void def_##NAME(PyObject *scope) { \
     if (PyType_Ready(&PyEnum_##NAME) < 0) { \
         PyErr_SetString(PyExc_Exception, "init " #NAME ": PyType_Ready failed"); \
     } \
-    PyObject* self = (PyObject *)&PyEnum_##NAME; \
-    PyObject* dict = PyEnum_##NAME.tp_dict; \
+    PyObject* self = (PyObject *)PyType_FindTLSType(&PyEnum_##NAME); \
+    PyObject* dict = ((PyTypeObject *)self)->tp_dict; \
     PyModule_AddObject(scope, #NAME, self); \
-    expand_items(register_item, NAME, ITEMS) \
+    expand_items(register_item, NAME, __VA_ARGS__) \
 }
 
-#define def_enum(NAME, TYPE, ITEMS...) \
-def_enum_repr(NAME, ITEMS) \
+#define def_enum(NAME, TYPE, ...) \
+def_enum_repr(NAME, __VA_ARGS__) \
+PyObject *PyEnum_##NAME##richcompare(PyObject *self, PyObject *other, int op); \
 static PyTypeObject PyEnum_##NAME = { \
     PyVarObject_HEAD_INIT(NULL, 0) \
     #NAME,                                    /*tp_name*/\
@@ -879,7 +893,7 @@ static PyTypeObject PyEnum_##NAME = { \
     "PyMNNEnum",                              /*tp_doc*/\
     0,                                        /*tp_traverse*/\
     0,                                        /*tp_clear*/\
-    &PyEnum_richcompare,                      /*tp_richcompare*/\
+    &PyEnum_##NAME##richcompare,              /*tp_richcompare*/\
     0,                                        /*tp_weaklistoffset*/\
     0,                                        /*tp_iter*/\
     0,                                        /*tp_iternext*/\
@@ -895,9 +909,22 @@ static PyTypeObject PyEnum_##NAME = { \
     0,                                        /*tp_alloc*/\
     PyEnum_new                                /*tp_new*/\
 };\
-static inline bool is##NAME(PyObject* obj) { return PyObject_IsInstance(obj, (PyObject*)&PyEnum_##NAME); } \
+static inline bool is##NAME(PyObject* obj) { return Py_TYPE(obj) == PyType_FindTLSType(&PyEnum_##NAME); } \
+PyObject *PyEnum_##NAME##richcompare(PyObject *self, PyObject *other, int op) { \
+    if (!is##NAME(other)) Py_RETURN_FALSE; \
+    int l = ((PyMNNEnum*)self)->value, r = ((PyMNNEnum*)other)->value; \
+    switch (op) { \
+        case Py_LT: return toPyObj(l < r); \
+        case Py_LE: return toPyObj(l <= r); \
+        case Py_EQ: return toPyObj(l == r); \
+        case Py_NE: return toPyObj(l != r); \
+        case Py_GT: return toPyObj(l > r); \
+        case Py_GE: return toPyObj(l >= r); \
+    } \
+    Py_RETURN_FALSE; \
+} \
 def_enum_to(NAME, TYPE) \
-def_enum_register(NAME, ITEMS)
+def_enum_register(NAME, __VA_ARGS__)
 // ------------------------ enum end --------------------------
 // ------------------------ func start ------------------------
 #define def_methods(MODULE, NAME) \
@@ -927,11 +954,12 @@ static PyObject* PyMNN##SCOPE##_##NAME(PyObject *self, PyObject *args) { \
 }
 #define declare_reduce(SCOPE, NAME, FUNC) \
 static PyObject* PyMNN##SCOPE##_##NAME(PyObject *self, PyObject *args) { \
-    PyObject *x, *axis = toPyObj(default_shape); \
+    INTS default_shape = {}; \
+    PyObject *x, *axis = nullptr; \
     int keep_dims = 0; \
     if (PyArg_ParseTuple(args, "O|Oi", &x, &axis, &keep_dims) \
-        && isVar(x) && isInts(axis)) { \
-        return toPyObj(FUNC(toVar(x), toInts(axis), keep_dims)); \
+        && isVar(x) && (axis == nullptr || isInts(axis))) { \
+        return toPyObj(FUNC(toVar(x), PARSE(axis, default_shape, toInts), keep_dims)); \
     } \
     PyMNN_ERROR(#NAME " require args: (Var, |[int], bool)"); \
 }
@@ -955,10 +983,11 @@ static PyObject* PyMNN##SCOPE##_##NAME(PyObject *self, PyObject *args) { \
 }
 #define declare_axiss_op(SCOPE, NAME, FUNC) \
 static PyObject* PyMNN##SCOPE##_##NAME(PyObject *self, PyObject *args) { \
-    PyObject *x, *axis = toPyObj(default_axis); \
+    INTS default_axis = {}; \
+    PyObject *x, *axis = nullptr; \
     if (PyArg_ParseTuple(args, "O|O", &x, &axis) \
-        && isVar(x) && isInts(axis)) { \
-        return toPyObj(FUNC(toVar(x), toInts(axis))); \
+        && isVar(x) && (axis == nullptr || isInts(axis))) { \
+        return toPyObj(FUNC(toVar(x), PARSE(axis, default_axis, toInts))); \
     } \
     PyMNN_ERROR(#NAME " require args: (Var, |[int])"); \
 }
@@ -999,7 +1028,7 @@ static void def_##NAME(PyObject *scope) { \
     if (PyType_Ready(&PyMNN##NAME##Type) < 0) { \
         PyErr_SetString(PyExc_Exception, "init" #NAME ": PyType_Ready PyMNN" #NAME "Type failed"); \
     } \
-    PyObject* self = (PyObject *)&PyMNN##NAME##Type; \
+    PyObject* self = (PyObject *)PyType_FindTLSType(&PyMNN##NAME##Type); \
     PyModule_AddObject(scope, #NAME, self); \
 }
 
@@ -1023,6 +1052,8 @@ static PyMethodDef PyMNN##NAME##_methods[] = { \
 };
 #define def_class_end(NAME, TYPE) \
 static PyObject* PyMNN##NAME##_new(PyTypeObject *type, PyObject *args, PyObject *kwds); \
+static int PyMNN##NAME##_init(PyTypeObject *self, PyObject *args, PyObject *kwds); \
+static PyObject* PyMNN##NAME##_call(PyObject *self, PyObject *args, PyObject *kwds); \
 static void PyMNN##NAME##_dealloc(PyMNN##NAME *self) { \
     if (self->ptr) { \
         delete self->ptr; \
@@ -1044,7 +1075,97 @@ static PyTypeObject PyMNN##NAME##Type = { \
     0,                                        /*tp_as_sequence*/\
     0,                                        /*tp_as_mapping*/\
     0,                                        /*tp_hash*/\
-    0,                                        /*tp_call*/\
+    PyMNN##NAME##_call,                       /*tp_call*/\
+    0,                                        /*tp_str*/\
+    0,                                        /*tp_getattro*/\
+    0,                                        /*tp_setattro*/\
+    0,                                        /*tp_as_buffer*/\
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/\
+    "MNN " #NAME " objects",                  /*tp_doc*/\
+    0,                                        /*tp_traverse*/\
+    0,                                        /*tp_clear*/\
+    0,                                        /*tp_richcompare*/\
+    0,                                        /*tp_weaklistoffset*/\
+    0,                                        /*tp_iter*/\
+    0,                                        /*tp_iternext*/\
+    PyMNN##NAME##_methods,                    /*tp_methods*/\
+    0,                                        /*tp_members*/\
+    PyMNN##NAME##_getsetters,                 /*tp_getset*/\
+    0,                                        /*tp_base*/\
+    0,                                        /*tp_dict*/\
+    0,                                        /*tp_descr_get*/\
+    0,                                        /*tp_descr_set*/\
+    0,                                        /*tp_dictoffset*/\
+    (initproc)PyMNN##NAME##_init,             /*tp_init*/\
+    0,                                        /*tp_alloc*/\
+    PyMNN##NAME##_new                         /*tp_new*/\
+};\
+def_class_register(NAME) \
+static PyMNN##NAME* get##NAME() { \
+    return (PyMNN##NAME *)PyObject_CallObject((PyObject*)PyType_FindTLSType(&PyMNN##NAME##Type), NULL); \
+} \
+static PyObject* toPyObj(TYPE* x) { \
+    auto ret = get##NAME(); \
+    ret->ptr = x; \
+    return (PyObject*)ret; \
+} \
+static TYPE* to##NAME(PyObject* m) { \
+    return ((PyMNN##NAME*)m)->ptr; \
+}
+
+// define an empty list for class without getter/setter
+#define def_class_without_getset(NAME) \
+static PyGetSetDef PyMNN##NAME##_getsetters[] = { \
+    {NULL}  /* Sentinel */ \
+};
+// define a basic new impl for class
+#define class_basic_new_impl(NAME) \
+static PyObject* PyMNN##NAME##_new(PyTypeObject *type, PyObject *args, PyObject *kwds) { \
+    PyMNN##NAME *self = (PyMNN##NAME *)type->tp_alloc(type, 0); \
+    return (PyObject*)self; \
+}
+#define class_basic_init_impl(NAME) \
+static int PyMNN##NAME##_init(PyTypeObject *self, PyObject *args, PyObject *kwds) { \
+    return 0; \
+}
+#define class_basic_call_impl(NAME) \
+static PyObject* PyMNN##NAME##_call(PyObject *self, PyObject *args, PyObject *kwds) { \
+    return (PyObject*)self; \
+}
+// ------------------------ class start ------------------------
+// ------------------------ capsule start ------------------------
+
+
+#define def_class_smart_start(NAME, TYPE) \
+typedef struct { \
+    PyObject_HEAD \
+    std::shared_ptr<TYPE>* ptr; \
+} PyMNN##NAME;
+#define def_class_smart_end(NAME, TYPE) \
+static PyObject* PyMNN##NAME##_new(PyTypeObject *type, PyObject *args, PyObject *kwds); \
+static PyObject* PyMNN##NAME##_call(PyObject *self, PyObject *args, PyObject *kwds); \
+static void PyMNN##NAME##_dealloc(PyMNN##NAME *self) { \
+    if (self->ptr) { \
+        delete self->ptr; \
+    } \
+    Py_TYPE(self)->tp_free((PyObject *) self); \
+} \
+static PyTypeObject PyMNN##NAME##Type = { \
+    PyVarObject_HEAD_INIT(NULL, 0) \
+    #NAME,                                    /*tp_name*/\
+    sizeof(PyMNN##NAME),                      /*tp_basicsize*/\
+    0,                                        /*tp_itemsize*/\
+    (destructor)PyMNN##NAME##_dealloc,        /*tp_dealloc*/\
+    0,                                        /*tp_print*/\
+    0,                                        /*tp_getattr*/\
+    0,                                        /*tp_setattr*/\
+    0,                                        /*tp_compare*/\
+    0,                                        /*tp_repr*/\
+    0,                                        /*tp_as_number*/\
+    0,                                        /*tp_as_sequence*/\
+    0,                                        /*tp_as_mapping*/\
+    0,                                        /*tp_hash*/\
+    PyMNN##NAME##_call,                       /*tp_call*/\
     0,                                        /*tp_str*/\
     0,                                        /*tp_getattro*/\
     0,                                        /*tp_setattro*/\
@@ -1071,30 +1192,18 @@ static PyTypeObject PyMNN##NAME##Type = { \
 };\
 def_class_register(NAME) \
 static PyMNN##NAME* get##NAME() { \
-    return (PyMNN##NAME *)PyObject_Call((PyObject*)&PyMNN##NAME##Type, PyTuple_New(0), NULL); \
+    return (PyMNN##NAME *)PyObject_CallObject((PyObject*)PyType_FindTLSType(&PyMNN##NAME##Type), NULL); \
 } \
 static PyObject* toPyObj(TYPE* x) { \
     auto ret = get##NAME(); \
-    ret->ptr = x; \
+    (*(ret->ptr)).reset(x); \
     return (PyObject*)ret; \
 } \
-static TYPE* to##NAME(PyObject* m) { \
+static std::shared_ptr<TYPE>* to##NAME(PyObject* m) { \
     return ((PyMNN##NAME*)m)->ptr; \
 }
 
-// define an empty list for class without getter/setter
-#define def_class_without_getset(NAME) \
-static PyGetSetDef PyMNN##NAME##_getsetters[] = { \
-    {NULL}  /* Sentinel */ \
-};
-// define a basic new impl for class
-#define class_basic_new_impl(NAME) \
-static PyObject* PyMNN##NAME##_new(PyTypeObject *type, PyObject *args, PyObject *kwds) { \
-    PyMNN##NAME *self = (PyMNN##NAME *)type->tp_alloc(type, 0); \
-    return (PyObject*)self; \
-}
-// ------------------------ class start ------------------------
-// ------------------------ capsule start ------------------------
+
 #define def_capsule(TYPE) \
 static void del_##TYPE(PyObject *obj) { \
     free(PyCapsule_GetPointer(obj, #TYPE)); \

@@ -153,65 +153,63 @@ void CPUResizeCommon::CPUResizeBilinearC4(halide_buffer_t& input, halide_buffer_
     const int outW            = output.dim[3].extent;
     const int outH            = output.dim[2].extent;
 
-    int depthQuad = UP_DIV(input.dim[1].extent, 4);
+    int depthQuad = UP_DIV(input.dim[1].extent, 4) * batches;
 
-    for (int b = 0; b < batches; ++b) {
-        auto threadFunction = [&](size_t tId) {
-            for (int n = (int)tId; n < depthQuad; n += threadNumber) {
-                auto _lineBuffer = lineBuffer + 2 * 4 * outW * tId;
-                auto _line0      = _lineBuffer + 4 * outW * 0;
-                auto _line1      = _lineBuffer + 4 * outW * 1;
-                int yUsed[2]     = {0, 0};
-                int yCache[2]    = {-1, -1};
+    auto threadFunction = [&](size_t tId) {
+        for (int n = (int)tId; n < depthQuad; n += threadNumber) {
+            auto _lineBuffer = lineBuffer + 2 * 4 * outW * tId;
+            auto _line0      = _lineBuffer + 4 * outW * 0;
+            auto _line1      = _lineBuffer + 4 * outW * 1;
+            int yUsed[2]     = {0, 0};
+            int yCache[2]    = {-1, -1};
 
-                float* yCacheLine[2]          = {_line0, _line1};
-                float* const yCacheStorage[2] = {_line0, _line1};
+            float* yCacheLine[2]          = {_line0, _line1};
+            float* const yCacheStorage[2] = {_line0, _line1};
 
-                auto bottomData =
-                    reinterpret_cast<const float*>(input.host) + b * inputBatchSize + (int)n * 4 * inW * inH;
-                auto topData = reinterpret_cast<float*>(output.host) + b * outputBatchSize + (int)n * 4 * outW * outH;
-                for (int dy = 0; dy < outH; dy++) {
-                    int yp[2];
-                    yp[0] = heightPosition[2 * dy + 0];
-                    yp[1] = heightPosition[2 * dy + 1];
-                    // Search cache
-                    for (int j = 0; j < 2; ++j) {
-                        yUsed[j] = 0;
+            auto bottomData =
+                reinterpret_cast<const float*>(input.host)  + (int)n * 4 * inW * inH;
+            auto topData = reinterpret_cast<float*>(output.host) + (int)n * 4 * outW * outH;
+            for (int dy = 0; dy < outH; dy++) {
+                int yp[2];
+                yp[0] = heightPosition[2 * dy + 0];
+                yp[1] = heightPosition[2 * dy + 1];
+                // Search cache
+                for (int j = 0; j < 2; ++j) {
+                    yUsed[j] = 0;
+                }
+                for (int j = 0; j < 2; ++j) {
+                    int find = 0;
+                    for (int k = 0; k < 2; ++k) {
+                        if (yp[j] == yCache[k]) {
+                            yUsed[k]      = 1;
+                            yCacheLine[j] = yCacheStorage[k];
+                            find          = 1;
+                            break;
+                        }
                     }
-                    for (int j = 0; j < 2; ++j) {
-                        int find = 0;
+                    if (!find) {
+                        const float* bottomY0 = bottomData + yp[j] * inW * 4;
                         for (int k = 0; k < 2; ++k) {
-                            if (yp[j] == yCache[k]) {
+                            if (!yUsed[k]) {
+                                yCache[k]     = yp[j];
                                 yUsed[k]      = 1;
                                 yCacheLine[j] = yCacheStorage[k];
-                                find          = 1;
+                                CPUBilinearSampleC4(bottomY0, yCacheLine[j], widthPosition, widthFactor, outW);
                                 break;
                             }
                         }
-                        if (!find) {
-                            const float* bottomY0 = bottomData + yp[j] * inW * 4;
-                            for (int k = 0; k < 2; ++k) {
-                                if (!yUsed[k]) {
-                                    yCache[k]     = yp[j];
-                                    yUsed[k]      = 1;
-                                    yCacheLine[j] = yCacheStorage[k];
-                                    CPUBilinearSampleC4(bottomY0, yCacheLine[j], widthPosition, widthFactor, outW);
-                                    break;
-                                }
-                            }
-                        }
                     }
-                    auto topY = topData + outW * 4 * dy;
-                    // Sample Input
-                    CPUBilinearLineC4(topY, yCacheLine[0], yCacheLine[1], &heightFactor[dy], outW);
                 }
+                auto topY = topData + outW * 4 * dy;
+                // Sample Input
+                CPUBilinearLineC4(topY, yCacheLine[0], yCacheLine[1], &heightFactor[dy], outW);
             }
-        };
-        MNN_CONCURRENCY_BEGIN(tId, threadNumber) {
-            threadFunction(tId);
         }
-        MNN_CONCURRENCY_END();
+    };
+    MNN_CONCURRENCY_BEGIN(tId, threadNumber) {
+        threadFunction(tId);
     }
+    MNN_CONCURRENCY_END();
 }
 
 void CPUResizeCommon::CPUResizeNearestneighborRoundC4(halide_buffer_t &input, halide_buffer_t &output, float wScale, float hScale, float wOffset, float hOffset) {
@@ -290,6 +288,122 @@ void CPUResizeCommon::CPUResizeNearestneighborC4(halide_buffer_t& input, halide_
                     ::memcpy(dstDataLine + dx * 4, srcDataLine + _linePosition[dx] * 4, sizeof(float) * 4);
                 }
             }
+        }
+        MNN_CONCURRENCY_END();
+    }
+}
+
+void CPUResizeCommon::CPUResizeNearestneighbor3DRoundC4(halide_buffer_t &input, halide_buffer_t &output,
+                                                        float wScale, float hScale, float dScale,
+                                                        float wOffset, float hOffset, float dOffset) {
+    const int batches         = input.dim[0].extent;
+    const int inputBatchSize  = input.dim[0].stride;
+    const int outputBatchSize = output.dim[0].stride;
+    const int inW             = input.dim[4].extent;
+    const int inH             = input.dim[3].extent;
+    const int inD             = input.dim[2].extent;
+    const int outW            = output.dim[4].extent;
+    const int outH            = output.dim[3].extent;
+    const int outD            = output.dim[2].extent;
+    const float xScaling      = wScale;
+    const float yScaling      = hScale;
+    const float zScaling      = dScale;
+    const int depthQuad       = UP_DIV(input.dim[1].extent, 4);
+
+    AutoStorage<int> linePosition(outW);
+    auto _linePosition = linePosition.get();
+    for (int x = 0; x < outW; ++x) {
+        float src_x      = x * xScaling + wOffset;
+        int x1           = static_cast<int>(floorf(src_x + 0.499f));
+        _linePosition[x] = CLAMP(x1, 0, inW - 1);
+    }
+
+    AutoStorage<int> columnPosition(outH);
+    auto _columnPosition = columnPosition.get();
+    for (int y = 0; y < outH; ++y) {
+        float src_y      = y * yScaling + hOffset;
+        int y1           = static_cast<int>(floorf(src_y + 0.499f));
+        _columnPosition[y] = CLAMP(y1, 0, inH - 1);
+    }
+
+    for (int b = 0; b < batches; ++b) {
+        MNN_CONCURRENCY_BEGIN(n, depthQuad) {
+            auto srcData = reinterpret_cast<const float*>(input.host)
+                    + b * inputBatchSize + static_cast<int>(n) * 4 * inW * inH * inD;
+            auto dstData = reinterpret_cast<float*>(output.host)
+                    + b * outputBatchSize + static_cast<int>(n) * 4 * outW * outH * inD;
+            for (int dz = 0; dz < outD; ++dz) {
+                float srcZ       = dz * zScaling + dOffset;
+                const int z_     = CLAMP(static_cast<int>(floorf(srcZ + 0.499f)), 0, inD - 1);
+                auto srcDataArea = srcData + inH * inW * 4 * z_;
+                auto dstDataArea = dstData + outH * outW * 4 * dz;
+                for (int dy = 0; dy < outH; ++dy) {
+                    auto srcDataLine = srcDataArea + inW * 4 * _columnPosition[dy];
+                    auto dstDataLine = dstDataArea + outW * 4 * dy;
+                    for (int dx = 0; dx < outW; ++dx) {
+                        ::memcpy(dstDataLine + dx * 4, srcDataLine + _linePosition[dx] * 4, sizeof(float) * 4);
+                    }
+                }
+            }
+
+        }
+        MNN_CONCURRENCY_END();
+    }
+}
+
+void CPUResizeCommon::CPUResizeNearestneighbor3DC4(halide_buffer_t& input, halide_buffer_t& output,
+                                                 float wScale, float hScale, float dScale,
+                                                 float wOffset, float hOffset, float dOffset) {
+    const int batches         = input.dim[0].extent;
+    const int inputBatchSize  = input.dim[0].stride;
+    const int outputBatchSize = output.dim[0].stride;
+    const int inW             = input.dim[4].extent;
+    const int inH             = input.dim[3].extent;
+    const int inD             = input.dim[2].extent;
+    const int outW            = output.dim[4].extent;
+    const int outH            = output.dim[3].extent;
+    const int outD            = output.dim[2].extent;
+    const float xScaling      = wScale;
+    const float yScaling      = hScale;
+    const float zScaling      = dScale;
+    const int depthQuad       = UP_DIV(input.dim[1].extent, 4);
+
+    AutoStorage<int> linePosition(outW);
+    auto _linePosition = linePosition.get();
+    for (int x = 0; x < outW; ++x) {
+        float src_x      = x * xScaling + wOffset;
+        int x1           = static_cast<int>(floor(src_x));
+        _linePosition[x] = CLAMP(x1, 0, inW - 1);
+    }
+
+    AutoStorage<int> columnPosition(outH);
+    auto _columnPosition = columnPosition.get();
+    for (int y = 0; y < outH; ++y) {
+        float src_y      = y * yScaling + hOffset;
+        int y1           = static_cast<int>(floor(src_y));
+        _columnPosition[y] = CLAMP(y1, 0, inH - 1);
+    }
+
+    for (int b = 0; b < batches; ++b) {
+        MNN_CONCURRENCY_BEGIN(n, depthQuad) {
+            auto srcData = reinterpret_cast<const float*>(input.host)
+                    + b * inputBatchSize + static_cast<int>(n) * 4 * inW * inH * inD;
+            auto dstData = reinterpret_cast<float*>(output.host)
+                    + b * outputBatchSize + static_cast<int>(n) * 4 * outW * outH * outD;
+            for (int dz = 0; dz < outD; ++dz){
+                float srcZ       = dz * zScaling + dOffset;
+                const int z_     = CLAMP(static_cast<int>(floor(srcZ)), 0, inD - 1);
+                auto srcDataArea = srcData + inH * inW * 4 * z_;
+                auto dstDataArea = dstData + outH * outW * 4 * dz;
+                for (int dy = 0; dy < outH; ++dy) {
+                    auto srcDataLine = srcDataArea + _columnPosition[dy] * inW * 4;
+                    auto dstDataLine = dstDataArea + dy * outW * 4;
+                    for (int dx = 0; dx < outW; ++dx) {
+                        ::memcpy(dstDataLine + dx * 4, srcDataLine + _linePosition[dx] * 4, sizeof(float) * 4);
+                    }
+                }
+            }
+
         }
         MNN_CONCURRENCY_END();
     }

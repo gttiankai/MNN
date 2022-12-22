@@ -8,6 +8,7 @@
 
 #include "../PostTreatUtils.hpp"
 #include "../Global.hpp"
+#include "../SubGraphComplete.hpp"
 #include "config.hpp"
 
 using namespace MNN;
@@ -59,6 +60,7 @@ static FormatSetType _getFormatType(const OpT* op, MNN_DATA_FORMAT originFormat)
         case MNN::OpType_Int8ToFloat:
         case MNN::OpType_FloatToInt8:
         case MNN::OpType_DepthwiseConvInt8:
+        case MNN::OpType_Interp3D:
             return NC4HW4_SINGLE;
         case MNN::OpType_ReLU:
         case MNN::OpType_ReLU6:
@@ -299,6 +301,7 @@ public:
         if (mNet->sourceType == MNN::NetSource_CAFFE) {
             return true;
         }
+        auto* ctx = Global<MNN::Express::OptimizeContext>::Get();
 
         auto originTensorType = MNN::MNN_DATA_FORMAT_NHWC;
         if (mNet->sourceType == MNN::NetSource_ONNX || mNet->sourceType == MNN::NetSource_TORCH) {
@@ -359,7 +362,7 @@ public:
                 if (OpType_Input == op->type) {
                     auto originInputFormat = op->main.AsInput()->dformat;
                     op->main.AsInput()->dformat = tensorFormats[op->outputIndexes[0]];
-                    if (originInputFormat == MNN_DATA_FORMAT_NHWC && op->main.AsInput()->dformat == MNN_DATA_FORMAT_NC4HW4 && op->main.AsInput()->dims.size() == 4) {
+                    if (originInputFormat == MNN_DATA_FORMAT_NHWC && op->main.AsInput()->dformat == MNN_DATA_FORMAT_NC4HW4 && op->main.AsInput()->dims.size() == 4 && ctx->first_run) {
                         int n = op->main.AsInput()->dims[0];
                         int h = op->main.AsInput()->dims[1];
                         int w = op->main.AsInput()->dims[2];
@@ -373,7 +376,7 @@ public:
             for (auto iter = mNet->oplists.begin(); iter != mNet->oplists.end();) {
                 auto op = iter->get();
                 // Insert Pretreat Op if needed
-                if (op->type == OpType_Padding && tensorFormats[op->outputIndexes[0]] == MNN_DATA_FORMAT_NC4HW4) {
+                if (op->type == OpType_Padding && tensorFormats[op->outputIndexes[0]] == MNN_DATA_FORMAT_NC4HW4 && ctx->first_run) {
                     const int padValueIndex = op->inputIndexes[1];
                     auto padValueOp         = PostTreatUtils::_findOpByOutputIndex(padValueIndex, mNet.get());
                     // Add Gather op for padding, turn nhwc -> nchw
@@ -426,6 +429,9 @@ public:
             auto currentName         = op->name;
             for (int i = 0; i < op->inputIndexes.size(); ++i) {
                 auto inputIndex = op->inputIndexes[i];
+                if (inputIndex < 0) {
+                    continue; // optional input, ignore it
+                }
                 auto type = tensorFormats[inputIndex];
                 auto requireType = _getRequireFormat(formatType, i, tensorFormats[op->outputIndexes[0]], originTensorType);
                 if (type == requireType) {
@@ -476,6 +482,9 @@ public:
                 continue;
             }
             if (tensorFormats[op->outputIndexes[0]] != MNN_DATA_FORMAT_NC4HW4) {
+                continue;
+            }
+            if (!ctx->first_run) {
                 continue;
             }
             if (MNN::OpType_Input == op->type) {

@@ -134,13 +134,15 @@ std::vector<float> doBench(Model& model, int loop, int warmup = 10, int forward 
 
     std::vector<float> costs;
     MNN::Session* session = net->createSession(config);
-    net->releaseModel();
+
     MNN::Tensor* input    = net->getSessionInput(session, NULL);
 
     // if the model has not the input dimension, umcomment the below code to set the input dims
     // std::vector<int> dims{1, 3, 224, 224};
     // net->resizeTensor(input, dims);
     // net->resizeSession(session);
+
+    net->releaseModel();
 
     const MNN::Backend* inBackend = net->getBackend(session, input);
 
@@ -150,26 +152,22 @@ std::vector<float> doBench(Model& model, int loop, int warmup = 10, int forward 
     std::shared_ptr<MNN::Tensor> expectTensor(MNN::Tensor::createHostTensorFromDevice(outputTensor, false));
     // Warming up...
     for (int i = 0; i < warmup; ++i) {
-        void* host = input->map(MNN::Tensor::MAP_TENSOR_WRITE,  MNN::Tensor::CAFFE);
-        input->unmap(MNN::Tensor::MAP_TENSOR_WRITE,  MNN::Tensor::CAFFE, host);
-        
+        void* host = input->map(MNN::Tensor::MAP_TENSOR_WRITE,  input->getDimensionType());
+        input->unmap(MNN::Tensor::MAP_TENSOR_WRITE,  input->getDimensionType(), host);
+
         net->runSession(session);
 
-        host = outputTensor->map(MNN::Tensor::MAP_TENSOR_READ,  MNN::Tensor::CAFFE);
-        outputTensor->unmap(MNN::Tensor::MAP_TENSOR_READ,  MNN::Tensor::CAFFE, host);
+        host = outputTensor->map(MNN::Tensor::MAP_TENSOR_READ,  outputTensor->getDimensionType());
+        outputTensor->unmap(MNN::Tensor::MAP_TENSOR_READ,  outputTensor->getDimensionType(), host);
     }
 
     for (int round = 0; round < loop; round++) {
         auto timeBegin = getTimeInUs();
-
-        void* host = input->map(MNN::Tensor::MAP_TENSOR_WRITE,  MNN::Tensor::CAFFE);
-        input->unmap(MNN::Tensor::MAP_TENSOR_WRITE,  MNN::Tensor::CAFFE, host);
-        
+        void* host = input->map(MNN::Tensor::MAP_TENSOR_WRITE,  input->getDimensionType());
+        input->unmap(MNN::Tensor::MAP_TENSOR_WRITE,  input->getDimensionType(), host);
         net->runSession(session);
-
-        host = outputTensor->map(MNN::Tensor::MAP_TENSOR_READ,  MNN::Tensor::CAFFE);
-        outputTensor->unmap(MNN::Tensor::MAP_TENSOR_READ,  MNN::Tensor::CAFFE, host);
-        
+        host = outputTensor->map(MNN::Tensor::MAP_TENSOR_READ,  outputTensor->getDimensionType());
+        outputTensor->unmap(MNN::Tensor::MAP_TENSOR_READ,  outputTensor->getDimensionType(), host);
         auto timeEnd = getTimeInUs();
         costs.push_back((timeEnd - timeBegin) / 1000.0);
     }
