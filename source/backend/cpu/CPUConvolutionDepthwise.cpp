@@ -40,7 +40,7 @@ CPUConvolutionDepthwise::FloatExecution::FloatExecution(const Convolution2DCommo
         mValid = false;
         return;
     }
-    success = mResource->copyBiasAlign(bias, biasSize);
+    success = mResource->copyBiasAlign(bias, static_cast<int>(biasSize));
     if (!success) {
         mValid = false;
         return;
@@ -147,7 +147,7 @@ ErrorCode CPUConvolutionDepthwise::BasicFloatExecution::onResize(const std::vect
     int kernel_width   = layer->kernelX();
     int padX           = mPadX;
     int padY           = mPadY;
-    if (src_width == 1 && dst_width == 1 && dst_height > 1) {
+    if (src_width == 1 && dst_width == 1 && dst_height > 1 && kernel_width == 1) {
         // Swap x, y
         dst_width = dst_height;
         dst_height = 1;
@@ -187,7 +187,8 @@ ErrorCode CPUConvolutionDepthwise::BasicFloatExecution::onResize(const std::vect
     auto postData = getPostParameters();
     auto batch = inputs[0]->batch();
     int total = batch * dst_depth_quad;
-    int numberThread  = std::min(((CPUBackend*)backend())->threadNumber(), total);
+    int numberThread = ((CPUBackend*)backend())->threadNumber();
+    auto rt = static_cast<const CPURuntime*>(backend()->getRuntime());
     auto runBasic     = [=](uint8_t* dst_z, const uint8_t* src_z, const uint8_t* weight_dz, int L, int T, int R, int B) {
         for (int dy = T; dy < B; ++dy) {
             auto dst_y        = dst_z + dy * dst_y_step * bytes;
@@ -207,10 +208,13 @@ ErrorCode CPUConvolutionDepthwise::BasicFloatExecution::onResize(const std::vect
             }
         }
     };
-    auto biasP   = inputs[2]->host<uint8_t>();
-    auto weightP = inputs[1]->host<uint8_t>();
+    std::vector<int> divides(numberThread+1);
+    divides[0] = 0;
+    rt->computeDivideSizes(total, divides.data()+1);
     mExecutor   = [=](const uint8_t* srcOrigin, uint8_t* dstOrigin, int tId) {
-        for (int index = tId; index < total; index += numberThread) {
+        auto biasP   = inputs[2]->host<uint8_t>();
+        auto weightP = inputs[1]->host<uint8_t>();
+        for (int index = divides[tId]; index < divides[tId+1]; ++index) {
             int dz = index / batch;
             auto dst_z           = dstOrigin + dst_z_step * index * bytes;
             const auto src_z     = srcOrigin + src_z_step * index * bytes;
@@ -256,10 +260,12 @@ public:
             return new CPUConvolutionDepthwise::MultiInputFloatExecution(conv, backend);
         }
         const float* originWeight = nullptr;
-        size_t originWeightSize   = 0;
+        const float* originBias = nullptr;
+        int originWeightSize   = 0;
+        int originBiasSize   = 0;
         std::shared_ptr<ConvolutionCommon::Int8Common> quanCommon;
         if (nullptr != conv2d->quanParameter()) {
-            quanCommon = ConvolutionCommon::load(conv2d->quanParameter(), true);
+            quanCommon = ConvolutionCommon::load(op, backend, true);
             // Back to float
             originWeight     = quanCommon->weightFloat.get();
             originWeightSize = quanCommon->weightFloat.size();
@@ -268,15 +274,19 @@ public:
             originWeight     = conv2d->weight()->data();
             originWeightSize = conv2d->weight()->size();
         }
+        if (nullptr == originBias) {
+            originBias     = op->main_as_Convolution2D()->bias()->data();
+            originBiasSize = op->main_as_Convolution2D()->bias()->size();
+        }
         if (inputs.empty()) {
-            return new CPUConvolutionDepthwise::FloatExecution(conv2d->common(), backend, originWeight, originWeightSize, conv2d->bias()->data(), conv2d->bias()->size());
+            return new CPUConvolutionDepthwise::FloatExecution(conv2d->common(), backend, originWeight, originWeightSize, originBias, originBiasSize);
         }
         auto core = static_cast<CPUBackend*>(backend)->functions();
         if (conv->dilateX() == 1 && conv->dilateY() == 1 && conv->strideX() == 1 && conv->strideY() == 1 &&
             conv->kernelX() == 3 && conv->kernelY() == 3 && outputs[0]->width() >= 2 && outputs[0]->height() >= 2 && core->MNNMultiAndDestTransformCommon23 != nullptr) {
-            return new ConvolutionDepthwise3x3(conv, backend, originWeight, originWeightSize, conv2d->bias()->data(), conv2d->bias()->size());
+            return new ConvolutionDepthwise3x3(conv, backend, originWeight, originWeightSize, originBias, originBiasSize);
         }
-        return new CPUConvolutionDepthwise::FloatExecution(conv2d->common(), backend, originWeight, originWeightSize, conv2d->bias()->data(), conv2d->bias()->size());
+        return new CPUConvolutionDepthwise::FloatExecution(conv2d->common(), backend, originWeight, originWeightSize, originBias, originBiasSize);
     }
 };
 

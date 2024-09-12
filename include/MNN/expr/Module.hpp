@@ -17,6 +17,7 @@
 #include <MNN/MNNForwardType.h>
 
 namespace MNN {
+class Session;
 namespace Express {
 struct SubGraph;
 class MNN_PUBLIC Module {
@@ -30,7 +31,6 @@ public:
     void setIsTraining(const bool isTraining);
     bool getIsTraining();
     void clearCache();
-
     const std::string& name() const {
         return mName;
     };
@@ -48,7 +48,7 @@ public:
 
     void setParameter(Express::VARP parameter, int index);
     static Module* createEmpty(const std::vector<Express::VARP>& parameters);
-    
+
     struct BackendInfo {
         MNNForwardType type = MNN_FORWARD_CPU;
         BackendConfig* config = nullptr;
@@ -64,8 +64,11 @@ public:
         // The weights will be rearranged in a general way, so the best implementation
         // may not be adopted if `rearrange` is enabled.
         bool rearrange = false;
-        
+
         BackendInfo* backend = nullptr;
+
+        // base module
+        const Module* base = nullptr;
     };
     static Module* load(const std::vector<std::string>& inputs, const std::vector<std::string>& outputs, const uint8_t* buffer, size_t length, const Config* config = nullptr);
     static Module* load(const std::vector<std::string>& inputs, const std::vector<std::string>& outputs, const char* fileName, const Config* config = nullptr);
@@ -103,7 +106,6 @@ public:
 
         EXPRP getOrClone(const EXPRP expr);
         VARP getOrClone(const VARP var);
-
     private:
         bool mShareParams = false;
         std::unordered_map<const Expr*, EXPRP> mExprMap;
@@ -116,16 +118,22 @@ public:
     void registerModel(const std::vector<std::shared_ptr<Module>>& children);
 
     static void destroy(Module* m);
+
+    int traceOrOptimize(Interpreter::SessionMode stage);
+    std::vector<std::shared_ptr<Module>> getChildren() const { return mChildren; }
 protected:
+    virtual int onOptimize(Interpreter::SessionMode stage) {
+        return 0;
+    }
     virtual void onClearCache() {
     }
 
     Module* cloneBaseTo(CloneContext* ctx, Module* module) const;
 
-private:
-    void _collectParameters(std::vector<Express::VARP>& result) const;
     std::vector<std::shared_ptr<Module>> mChildren;
     std::vector<Express::VARP> mParameters;
+private:
+    void _collectParameters(std::vector<Express::VARP>& result) const;
     bool mIsTraining = true;
     std::string mName;
     std::string mType;

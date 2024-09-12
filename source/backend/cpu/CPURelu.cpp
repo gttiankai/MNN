@@ -47,6 +47,12 @@ ErrorCode CPURelu::onExecute(const std::vector<Tensor*>& inputs, const std::vect
 
     if (CPUBackend::getDataType(inputs[0]) == DataType_DT_INT8 || inputs[0]->getType().bytes() == 1) {
         const int8_t* srcO = (const int8_t*)ib.host;
+        auto inInfo = TensorUtils::getQuantInfo(inputs[0]);
+        auto outInfo = TensorUtils::getQuantInfo(outputs[0]);
+        if (inInfo != outInfo) {
+            MNN_PRINT("this relu int8 implementation has error when input output quant info mismatch\n");
+        }
+        int8_t zeroPoint = int8_t(outInfo[1]);
         int8_t* dstO       = (int8_t*)ob.host;
         auto size         = mRealSize;
         auto numberThread = ((CPUBackend*)backend())->threadNumber();
@@ -59,12 +65,12 @@ ErrorCode CPURelu::onExecute(const std::vector<Tensor*>& inputs, const std::vect
                 if (tId == numberThread - 1) {
                     number = sizeQuad - tId * sizeDivide;
                 }
-                MNNReluInt8(dstO + 16 * tId * sizeDivide, srcO + 16 * tId * sizeDivide, number * 16);
+                MNNReluInt8(dstO + 16 * tId * sizeDivide, srcO + 16 * tId * sizeDivide, number * 16, zeroPoint);
             }
             MNN_CONCURRENCY_END();
         }
         for (int i = remain; i < size; i++) {
-            dstO[i] = srcO[i] > 0 ? srcO[i] : 0;
+            dstO[i] = srcO[i] > zeroPoint ? srcO[i] : zeroPoint;
         }
         return NO_ERROR;
     }
@@ -158,6 +164,36 @@ CPUPRelu::~CPUPRelu() {
     }
 }
 
+ErrorCode CPUPRelu::onResize(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs) {
+    auto core = static_cast<CPUBackend*>(backend())->functions();
+    if (CPUBackend::getDataType(inputs[0]) == DataType_DT_INT8 || inputs[0]->getType().bytes() == 1) {
+        mUseInt8 = 1;
+        float inputScale = TensorUtils::getDescribe(inputs[0])->quantAttr->scale;
+        float outputScale = TensorUtils::getDescribe(outputs[0])->quantAttr->scale;
+        if (outputScale == 0) {
+            outputScale = 0;
+        } else {
+            outputScale = 1.0f / outputScale;
+        }
+        ssize_t inputZero = static_cast<ssize_t>(TensorUtils::getDescribe(inputs[0])->quantAttr->zero);
+        ssize_t outputZero = static_cast<ssize_t>(TensorUtils::getDescribe(outputs[0])->quantAttr->zero);
+        ssize_t maxValue = static_cast<ssize_t>(TensorUtils::getDescribe(inputs[0])->quantAttr->max);
+        ssize_t minValue = static_cast<ssize_t>(TensorUtils::getDescribe(inputs[0])->quantAttr->min);
+        mQuanScalesInput.resize(1);
+        mQuanScalesOutput.resize(1);
+        mQuanZerosInput.resize(1);
+        mQuanZerosOutput.resize(1);
+        mQuanScalesInput = {inputScale};
+        mQuanScalesOutput = {outputScale};
+        mQuanZerosInput = {inputZero};
+        mQuanZerosOutput = {outputZero};
+        auto p = mSlope.host<float>();
+        for (int i = 0; i < mSlope.buffer().dim[0].extent; ++i) {
+            p[i] = p[i] * inputScale * outputScale;
+        }
+    }
+    return NO_ERROR;
+}
 
 ErrorCode CPUPRelu::onExecute(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs) {
     auto& ib            = inputs[0]->buffer();
@@ -167,13 +203,33 @@ ErrorCode CPUPRelu::onExecute(const std::vector<Tensor*>& inputs, const std::vec
         sizeQuad *= ib.dim[i].extent;
     }
     auto core = static_cast<CPUBackend*>(backend())->functions();
+    auto coreInt8 = static_cast<CPUBackend*>(backend())->int8Functions();
     const int channel   = ib.dim[1].extent;
     const int batch     = ib.dim[0].extent;
-    const int depthQuad = UP_DIV(channel, core->pack);
+    int pack = 4;
+    int depthQuad = UP_DIV(channel, core->pack);
     const uint8_t* srcO   = (const uint8_t*)ib.host;
     uint8_t* dstO         = (uint8_t*)ob.host;
     auto totalCount = batch * depthQuad;
     auto numberThread = ((CPUBackend*)backend())->threadNumber();
+    if (mUseInt8) {
+        depthQuad = UP_DIV(channel, pack);
+        MNN_CONCURRENCY_BEGIN(tId, numberThread) {
+            QuanPrePostParameters params;
+            params.maxValue = static_cast<ssize_t>(TensorUtils::getDescribe(inputs[0])->quantAttr->max);
+            params.minValue = static_cast<ssize_t>(TensorUtils::getDescribe(inputs[0])->quantAttr->min);
+            params.inputScale = mQuanScalesInput.data();
+            params.inputZeroPoint = mQuanZerosInput.data();
+            params.outputScale = mQuanScalesOutput.data();
+            params.outputZeroPoint = mQuanZerosOutput.data();
+            for (int b=tId; b<totalCount; b+=numberThread) {
+                auto c = b / batch;
+                coreInt8->MNNReluWithSlopeChannelInt8((int8_t*)(dstO + sizeQuad * pack * b), (const int8_t*)(srcO + sizeQuad * pack * b), (const float*)(mSlope.host<uint8_t>() + core->bytes * pack * c), sizeQuad, 1, &params);
+            }
+        }
+        MNN_CONCURRENCY_END();
+        return NO_ERROR;
+    }
     MNN_CONCURRENCY_BEGIN(tId, numberThread) {
         for (int b=tId; b<totalCount; b+=numberThread) {
             auto c = b / batch;

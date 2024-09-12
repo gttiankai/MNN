@@ -108,11 +108,14 @@ public:
         Dimensionformat order = NHWC;
         INTS dim;
         halide_type_t type;
-        int size;
+        size_t size;
         void syncSize();
     };
     const std::string& name() const;
     void setName(const std::string& name);
+    bool setDevicePtr(const void* devicePtr, int memoryType);
+    bool copyToDevicePtr(void* devicePtr, int memoryType);
+
     std::pair<EXPRP, int> expr() const {
         return std::make_pair(mFrom, mFromIndex);
     }
@@ -127,6 +130,10 @@ public:
     template <typename T>
     T* writeMap() {
         return (T*)writeInternal();
+    }
+
+    void writeScaleMap(float scaleValue, float zeroPoint) {
+        writeScaleInternal(scaleValue, zeroPoint);
     }
 
     //Depecerate
@@ -159,6 +166,8 @@ public:
         mFromIndex = index;
     }
 
+    // Can't modify the tensor from this interface
+    const Tensor* getTensor() const;
 private:
     Variable(EXPRP expr, int index) {
         mFrom      = expr;
@@ -168,6 +177,7 @@ private:
     void* readInternal(bool forShape = false);
     void* writeInternal(bool inform=true);
     void informDirty();
+    void writeScaleInternal(float scaleValue, float zeroPoint, bool inform = true);
 
     friend class Expr;
     EXPRP mFrom;
@@ -210,12 +220,6 @@ public:
     }
     ~Expr();
 
-    bool visited() const {
-        return mVisited;
-    }
-    void setVisited(bool visited) {
-        mVisited = visited;
-    }
     const std::string& name() const {
         return mName;
     }
@@ -224,6 +228,7 @@ public:
     }
 
     VARP::InputType inputType() const {return mType;}
+    /** Internal Usage Begin */
     Variable::Info* outputInfo(int index) const;
     std::shared_ptr<BufferStorage> extra() const {
         return mStorage;
@@ -235,6 +240,15 @@ public:
     bool valid() const {
         return mValid;
     }
+    bool visited() const {
+        return mVisited;
+    }
+    void setVisited(bool visited) {
+        mVisited = visited;
+    }
+
+    /** Internal Usage End */
+
 
 private:
     static void _addLinkForInputs(EXPRP expr);
@@ -255,6 +269,8 @@ private:
     std::shared_ptr<Inside> mInside = nullptr;
     bool mVisited                   = false;
     std::vector<WeakEXPRP> mTo;
+    bool mCanDecompose = true;
+    friend class ExprModule;
 
 };
 } // namespace Express

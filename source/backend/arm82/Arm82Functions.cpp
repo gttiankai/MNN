@@ -10,6 +10,13 @@
 #include "Arm82Relu.hpp"
 #include "backend/cpu/compute/CommonOptFunction.h"
 #include "backend/cpu/CPUPool.hpp"
+#include "backend/cpu/CPURuntime.hpp"
+
+#define FLOAT FLOAT16
+#define PACK 8
+using Vec = MNN::Math::Vec<FLOAT16, 8>;
+
+#include "backend/cpu/GridSampler.hpp"
 
 #if defined(MNN_USE_NEON)
 #include <arm_neon.h>
@@ -26,8 +33,24 @@ void MNNPackedMatMulFP16(float* C, const float* A, const float* B, const size_t*
 
 // C(UP_DIV(h,8), e, h8) = B(UP_DIV(h,hP), l, hP) * A(l, e), hP = 24, e >= 1
 // parameter: [aStride, l, h, cStride, bExtraStride]
-void MNNPackedMatMulRemainFP16(float* C, const float* A, const float* B, size_t eSize, const size_t* parameter, const float* postParameters, const float* bias);
+void MNNPackedMatMulRemainFP16(float* C, const float* A, const float* B, size_t eSize, const size_t* parameter, const float* postParameters, const float* bias, const float* k, const float* b);
 
+#ifdef MNN_LOW_MEMORY
+void MNNPackedMatMulFP16_int4(float* C, const float* A, const float* B, const size_t* parameter, const float* postParameters, const float* bias, const float* k, const float* b);
+void MNNPackedMatMulRemainFP16_int4(float* C, const float* A, const float* B, size_t eSize, const size_t* parameter, const float* postParameters, const float* bias, const float* k, const float* b);
+void MNNPackedMatMulFP16_int8(float* C, const float* A, const float* B, const size_t* parameter, const float* postParameters, const float* bias, const float* k, const float* b);
+void MNNPackedMatMulRemainFP16_int8(float* C, const float* A, const float* B, size_t eSize, const size_t* parameter, const float* postParameters, const float* bias, const float* k, const float* b);
+
+void MNNAbsMaxFP16(const float* source, float* absmax, size_t src_depth_quad, size_t realSize, int pack);
+void MNNQuantScaleFP16(float* sum, float* absmax, float* quant_scale, float* dequant_scale, size_t thread, size_t batch);
+void MNNDynamicQuantFP16(const float* src, int8_t* dst, const float* scale, size_t src_depth_quad, size_t realSize, int pack);
+void MNNQuantSumFP16(float* sum, const float* dequant_scale, size_t thread, size_t batch);
+#endif
+#if defined(__aarch64__)
+void CountMinMaxValue_FP16(float* source, float* minVal, float* maxVal, size_t sizeQuad);
+void MNNSumByAxisLForMatmul_A_ARM86(float* dest, int8_t* source, const float* dequantScale, ssize_t realDstCount, SumByAxisParams sumParams);
+void MNNSumByAxisLForMatmul_A_ARM82(float* dest, int8_t* source, const float* dequantScale, ssize_t realDstCount, SumByAxisParams sumParams);
+#endif
 void MNNConvDwF23MulTransUnitFP16(FLOAT16 **cacheLine, const FLOAT16 *weight, FLOAT16 *dest, size_t ow);
 
 void MNNConvDwF23SourceTransUnitFP16(const FLOAT16 *source, FLOAT16 *dest, size_t unit);
@@ -36,7 +59,6 @@ void MNNConvRunForLineDepthwiseFP16(float* dst, const float* src, const float* w
                                 size_t fw, size_t fh, size_t dilateX_step, size_t dilateY_step, size_t height, size_t srcHStep, size_t dstHStep);
 }
 
-using Vec = MNN::Math::Vec<FLOAT16, 8>;
 
 namespace MNN {
 
@@ -58,6 +80,32 @@ static void MNNMatrixSubFP16(FLOAT16* C, const FLOAT16* A, const FLOAT16* B, siz
         }
     }
 }
+#if defined(__aarch64__)
+static void ARM82CountMinMaxValue(float* source, float* minVal, float* maxVal, size_t size) {
+    if (size % 8 == 0) {
+        CountMinMaxValue_FP16(source, minVal, maxVal, size / 8);
+    } else {
+        auto remain = size - 8 * (size / 8);
+        auto max_ = ((__fp16*)source)[0];
+        auto min_ = max_;
+        if (size >= 8) {
+            CountMinMaxValue_FP16(source, minVal, maxVal, size / 8);
+            max_ = ((__fp16*)maxVal)[0];
+            min_ = ((__fp16*)minVal)[0];
+        }
+        if (remain > 0) {
+            int16_t tmp[8] = {0};
+            auto srcRemain = reinterpret_cast<uint8_t*>(source) + 8 * (size / 8) * 2;
+            ::memcpy(tmp, srcRemain, remain * 2);
+            CountMinMaxValue_FP16((float*)tmp, (float*)tmp, (float*)((uint8_t*)tmp + 2), 1);
+            max_ = ALIMAX(((__fp16*)tmp)[1], max_);
+            min_ = ALIMIN(((__fp16*)tmp)[0], min_);
+        }
+        reinterpret_cast<__fp16*>(minVal)[0] = min_;
+        reinterpret_cast<__fp16*>(maxVal)[0] = max_;
+    }
+}
+#endif
 
 static void Arm82MNNPackForMatMul_B(float* destC, const float* sourceC, size_t h, size_t l, bool transpose) {
     auto dest = (int16_t*)destC;
@@ -146,70 +194,44 @@ static void MNNGridSampleComputeCordFP16(FLOAT16* dst, const FLOAT16* src, size_
     ::memcpy(dst, tempDst, areaRemain * 2 * sizeof(int16_t));
 }
 
-static size_t MNNGridSampleComputeOffsetFP16(int h, int w, int height, int width, bool padMode) {
-    if (padMode == true) { //padMode == BorderMode_ZEROS
-        if (h < 0 || h >= height || w < 0 || w >= width) {
-            return -1;
-        }
-    } else {
-        // Clearly, CLAMP is the right way to go for GridSamplePaddingMode_BORDER
-        // For GridSamplePaddingMode_REFLECTION, since we have reflected the values into (-1, 1),
-        // the leftover reflections degrade to GridSamplePaddingMode_BORDER
-        h = h < 0 ? 0 : (h > (height - 1) ? (height - 1) : h);
-        w = w < 0 ? 0 : (w > (width - 1) ? (width - 1) : w);
+static void MNNGridSampleComputeCord3DFp16(FLOAT* dst, const FLOAT* src, size_t inD, size_t inH, size_t inW, size_t outD, size_t outH, size_t outW, size_t strideD, size_t strideH, bool alignCorners) {
+    float16x8_t zero = vdupq_n_f16(0);
+    float16x8_t one = vdupq_n_f16(1);
+    float16x8_t half = vdupq_n_f16(0.5f);
+    float16x8_t a = alignCorners ? one : zero;
+    float16x8_t b = alignCorners ? zero : one;
+    float16x8_t inW_sub_a = vsubq_f16(vdupq_n_f16(inW), a);
+    float16x8_t inH_sub_a = vsubq_f16(vdupq_n_f16(inH), a);
+    float16x8_t inD_sub_a = vsubq_f16(vdupq_n_f16(inD), a);
+    size_t area = outH * outW * outD;
+    size_t areaC8 = area / 8;
+    size_t areaRemain = area - areaC8 * 8;
+
+    for (int i = 0; i < areaC8; ++i) {
+        auto cordH = vld3q_f16(src);
+        // float16x8_t x = cordH.val[0];
+        // float16x8_t y = cordH.val[1];
+        cordH.val[0] = vmulq_f16(half, vsubq_f16(vmulq_f16(vaddq_f16(one, cordH.val[0]), inW_sub_a), b));
+        cordH.val[1] = vmulq_f16(half, vsubq_f16(vmulq_f16(vaddq_f16(one, cordH.val[1]), inH_sub_a), b));
+        cordH.val[2] = vmulq_f16(half, vsubq_f16(vmulq_f16(vaddq_f16(one, cordH.val[2]), inD_sub_a), b));
+        vst3q_f16(dst, cordH);
+        src += 24;
+        dst += 24;
     }
-    return h * width * 8 + w * 8;
-}
-
-static void MNNGridSampleInterpFP16(FLOAT16* outputPtr, const FLOAT16* inputPtr, const FLOAT16* cordPtr, size_t inH, size_t inW, size_t outW, size_t channelCUnit, size_t inOffset, size_t outOffset, bool sampleMode, bool padMode) {
-    for (auto ow = 0; ow < outW; ++ow) {
-        auto w_fp16 = cordPtr[2 * ow + 0];
-        auto h_fp16 = cordPtr[2 * ow + 1];
-        float w = (float)(w_fp16);
-        float h = (float)(h_fp16);
-        Vec interp;
-
-        if (sampleMode == true) { //sampleMode == SampleMode_NEAREST
-            int nh = ::floor(h + 0.5f);
-            int nw = ::floor(w + 0.5f);
-            size_t ns = MNNGridSampleComputeOffsetFP16(nh, nw, inH, inW, padMode);
-            for (int k = 0; k < channelCUnit; ++k) {
-                interp = ns == -1 ? Vec(0.f) : Vec::load(inputPtr + k * inOffset + ns);
-                Vec::save(outputPtr + k * outOffset + 8 * ow, interp);
-            }
-        } else { //sampleMode == GridSampleMode_BILINEAR
-            int w0_h = ::floor(h);
-            int w0_w = ::floor(w);
-            int w1_h = ::ceil(h);
-            int w1_w = ::ceil(w);
-            auto oneV = Vec((FLOAT16)1);
-
-            auto f0 = Vec((FLOAT16)w1_w - w_fp16);
-            auto f1 = oneV - f0;
-            auto h0 = Vec((FLOAT16)w1_h - h_fp16);
-            auto h1 = oneV - h0;
-
-            size_t s00 = MNNGridSampleComputeOffsetFP16(w0_h, w0_w, inH, inW, padMode);
-            size_t s01 = MNNGridSampleComputeOffsetFP16(w0_h, w1_w, inH, inW, padMode);
-            size_t s10 = MNNGridSampleComputeOffsetFP16(w1_h, w0_w, inH, inW, padMode);
-            size_t s11 = MNNGridSampleComputeOffsetFP16(w1_h, w1_w, inH, inW, padMode);
-
-            for (int k = 0; k < channelCUnit; ++k) {
-                Vec i00 = s00 == -1 ? Vec(0.f) : Vec::load(inputPtr + k * inOffset + s00);
-                Vec i01 = s01 == -1 ? Vec(0.f) : Vec::load(inputPtr + k * inOffset + s01);
-                Vec i10 = s10 == -1 ? Vec(0.f) : Vec::load(inputPtr + k * inOffset + s10);
-                Vec i11 = s11 == -1 ? Vec(0.f) : Vec::load(inputPtr + k * inOffset + s11);
-
-                Vec i0 = i00 * f0 + i01 * f1;
-                Vec i1 = i10 * f0 + i11 * f1;
-
-                interp = i0 * h0 + i1 * h1;
-                Vec::save(outputPtr + k * outOffset + 8 * ow, interp);
-            }
-        }
+    if (areaRemain == 0) {
+        return;
     }
-}
 
+    // areaRemain
+    FLOAT16 tempDst[24];
+    ::memcpy(tempDst, src, areaRemain * 3 * sizeof(int16_t));
+    auto cordH = vld3q_f16(tempDst);
+    cordH.val[0] = vmulq_f16(half, vsubq_f16(vmulq_f16(vaddq_f16(one, cordH.val[0]), inW_sub_a), b));
+    cordH.val[1] = vmulq_f16(half, vsubq_f16(vmulq_f16(vaddq_f16(one, cordH.val[1]), inH_sub_a), b));
+    cordH.val[2] = vmulq_f16(half, vsubq_f16(vmulq_f16(vaddq_f16(one, cordH.val[2]), inD_sub_a), b));
+    vst3q_f16(tempDst, cordH);
+    ::memcpy(dst, tempDst, areaRemain * 3 * sizeof(int16_t));
+}
 static void MNNRoiPoolingMaxFP16(FLOAT16* dst, const FLOAT16* src, int hLen, int wLen, int iw) {
     Vec max = Vec(-65504.0f);
     for (int h = 0; h < hLen; h++, src += iw * 8) {
@@ -222,7 +244,7 @@ static void MNNRoiPoolingMaxFP16(FLOAT16* dst, const FLOAT16* src, int hLen, int
 }
 
 static void MNNRoiAlignMaxFP16(FLOAT16* dst, const FLOAT16* src, const std::vector<std::vector<int>> &vecPos, const std::vector<std::vector<float>> &vecArea, int samplingRatioArea, int pooledHeight, int pooledWidth) {
-    for (int h = 0; h < pooledHeight; ++h, dst += pooledHeight * 8) {
+    for (int h = 0; h < pooledHeight; ++h, dst += pooledWidth * 8) {
         int preCalcIdx = h * pooledWidth * samplingRatioArea;
         for (int w = 0; w < pooledWidth; ++w) {
             Vec res = Vec(-65504.0f);
@@ -248,7 +270,7 @@ static void MNNRoiAlignMaxFP16(FLOAT16* dst, const FLOAT16* src, const std::vect
 
 static void MNNRoiAlignAvgFP16(FLOAT16* dst, const FLOAT16* src, const std::vector<std::vector<int>> &vecPos, const std::vector<std::vector<float>> &vecArea, int samplingRatioArea, int pooledHeight, int pooledWidth) {
     float invSamplingCnt = 1.f / samplingRatioArea;
-    for (int h = 0; h < pooledHeight; ++h, dst += pooledHeight * 8) {
+    for (int h = 0; h < pooledHeight; ++h, dst += pooledWidth * 8) {
         int preCalcIdx = h * pooledWidth * samplingRatioArea;
         for (int w = 0; w < pooledWidth; ++w) {
             Vec res = Vec(0.f);
@@ -665,8 +687,14 @@ static CoreFunctions* gInstance = nullptr;
 
 bool Arm82Functions::init() {
     using Vec = MNN::Math::Vec<FLOAT16, 8>;
+    auto origin = MNNGetCoreFunctions();
 #define FUNC_PTR_ASSIGN(dst, src) dst = (decltype(dst))(src)
     gInstance = new CoreFunctions;
+
+    FUNC_PTR_ASSIGN(gInstance->MNNFp32ToFp8, MNNFp32ToFp8);
+    FUNC_PTR_ASSIGN(gInstance->MNNFp16ToFp8, MNNFp16ToFp8);
+    FUNC_PTR_ASSIGN(gInstance->MNNFp8ToFp32, MNNFp8ToFp32);
+    FUNC_PTR_ASSIGN(gInstance->MNNFp8ToFp16, MNNFp8ToFp16);
 
     FUNC_PTR_ASSIGN(gInstance->MNNFp32ToLowp, MNNQuantizeFP16);
     FUNC_PTR_ASSIGN(gInstance->MNNLowpToFp32, MNNDequantizeFP16);
@@ -687,10 +715,16 @@ bool Arm82Functions::init() {
     FUNC_PTR_ASSIGN(gInstance->MNNMatrixSub, MNNMatrixSubFP16);
     FUNC_PTR_ASSIGN(gInstance->MNNMatrixAdd, MNNMatrixAddFP16);
     FUNC_PTR_ASSIGN(gInstance->MNNStrassenMergeCFunction, ARM82StrassenMerge);
+#ifdef MNN_LOW_MEMORY
+    FUNC_PTR_ASSIGN(gInstance->MNNDynamicUpdateConvBiasScale, origin->MNNDynamicUpdateConvBiasScale);
+#endif
     gInstance->penalty = 2.0f;
     FUNC_PTR_ASSIGN(gInstance->MNNScaleAndAddBias, MNNScaleAndAddBiasFP16);
     FUNC_PTR_ASSIGN(gInstance->MNNGridSampleComputeCord, MNNGridSampleComputeCordFP16);
-    FUNC_PTR_ASSIGN(gInstance->MNNGridSampleInterp, MNNGridSampleInterpFP16);
+    FUNC_PTR_ASSIGN(gInstance->MNNGridSampleInterp, MNNGridSampleInterp);
+    FUNC_PTR_ASSIGN(gInstance->MNNGridSampleInterpGrad, MNNGridSampleInterpGrad);
+    FUNC_PTR_ASSIGN(gInstance->MNNGridSampleComputeCord3D, MNNGridSampleComputeCord3DFp16);
+    FUNC_PTR_ASSIGN(gInstance->MNNGridSampleInterp3D, MNNGridSampleInterp3D);
     FUNC_PTR_ASSIGN(gInstance->MNNRoiPoolingMax, MNNRoiPoolingMaxFP16);
     FUNC_PTR_ASSIGN(gInstance->MNNRoiAlignMax, MNNRoiAlignMaxFP16);
     FUNC_PTR_ASSIGN(gInstance->MNNRoiAlignAvg, MNNRoiAlignAvgFP16);
@@ -700,6 +734,31 @@ bool Arm82Functions::init() {
     // MatMul
     FUNC_PTR_ASSIGN(gInstance->MNNPackedMatMul, MNNPackedMatMulFP16);
     FUNC_PTR_ASSIGN(gInstance->MNNPackedMatMulRemain, MNNPackedMatMulRemainFP16);
+#if defined(__aarch64__)
+#ifdef MNN_LOW_MEMORY
+    // Weight Dequant Gemm Kernels
+    FUNC_PTR_ASSIGN(gInstance->MNNPackedMatMul_int4, MNNPackedMatMulFP16_int4);
+    FUNC_PTR_ASSIGN(gInstance->MNNPackedMatMulRemain_int4, MNNPackedMatMulRemainFP16_int4);
+    FUNC_PTR_ASSIGN(gInstance->MNNPackedMatMul_int8, MNNPackedMatMulFP16_int8);
+    FUNC_PTR_ASSIGN(gInstance->MNNPackedMatMulRemain_int8, MNNPackedMatMulRemainFP16_int8);
+    // Dynamic Qaunt Helper Functions
+    FUNC_PTR_ASSIGN(gInstance->MNNAbsMax, MNNAbsMaxFP16);
+    FUNC_PTR_ASSIGN(gInstance->MNNQuantScale, MNNQuantScaleFP16);
+    FUNC_PTR_ASSIGN(gInstance->MNNDynamicQuant, MNNDynamicQuantFP16);
+    FUNC_PTR_ASSIGN(gInstance->MNNQuantSum, MNNQuantSumFP16);
+    FUNC_PTR_ASSIGN(gInstance->MNNCountMaxMinValue, ARM82CountMinMaxValue);
+    // Dynamic Quant Gemm Kernels.
+    gInstance->supportFp16arith = origin->supportFp16arith;
+    gInstance->supportSDot = origin->supportSDot;
+    gInstance->supportI8mm = origin->supportI8mm;
+#endif
+    if (gInstance->supportSDot) {
+        FUNC_PTR_ASSIGN(gInstance->MNNSumByAxisLForMatmul_A, MNNSumByAxisLForMatmul_A_ARM82);
+    }
+    if (gInstance->supportI8mm) {
+        FUNC_PTR_ASSIGN(gInstance->MNNSumByAxisLForMatmul_A, MNNSumByAxisLForMatmul_A_ARM86);
+    }
+#endif
     FUNC_PTR_ASSIGN(gInstance->MNNPackC4ForMatMul_A, Arm82MNNPackForMatMul_A);
     FUNC_PTR_ASSIGN(gInstance->MNNGetMatMulPackMode, Arm82MNNGetMatMulPackMode);
     FUNC_PTR_ASSIGN(gInstance->MNNPackForMatMul_B, Arm82MNNPackForMatMul_B);

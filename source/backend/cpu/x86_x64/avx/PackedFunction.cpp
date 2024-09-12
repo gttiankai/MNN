@@ -17,6 +17,11 @@
 #include "backend/cpu/BinaryUtils.hpp"
 #include "Vec8.hpp"
 #define PACK_UNIT 8
+#define PACK PACK_UNIT
+#define FLOAT float
+using Vec = Vec8;
+#include "backend/cpu/GridSampler.hpp"
+
 extern "C" {
 void _AVX_MNNCopyC4WithStride(const float* source, float* dest, size_t srcStride, size_t dstStride, size_t count);
 void _AVX_MNNAddC4WithStride(const float* source, float* dest, size_t srcStride, size_t dstStride, size_t count);
@@ -26,8 +31,6 @@ void _AVX_MNNDeconvRunForUnitDepthWise(const float* dst, float* src, const float
 void _AVX_MNNDeconvRunForLineDepthwise(const float* dst, float* src, const float* weight, size_t width, size_t src_w_setup,
                                        size_t fw, size_t fh, size_t dilateX_step, size_t dilateY_step);
 void _AVX_MNNGridSampleComputeCord(float* dst, const float* src, size_t inH, size_t inW, size_t outH, size_t outW, size_t stride, bool alignCorners);
-void _AVX_MNNGridSampleInterp(float* outputPtr, const float* inputPtr, const float* cordPtr, size_t inH, size_t inW, size_t outW, 
-                                    size_t channelCUnit, size_t inOffset, size_t outOffset, bool sampleMode, bool padMode);
 void _AVX_MNNRoiPoolingMax(float* dst, const float* src, int hLen, int wLen, int iw);
 void _AVX_MNNRoiAlignMax(float* dst, const float* src, const std::vector<std::vector<int>> &vecPos, const std::vector<std::vector<float>> &vecArea, int samplingRatioArea, int pooledHeight, int pooledWidth);
 void _AVX_MNNRoiAlignAvg(float* dst, const float* src, const std::vector<std::vector<int>> &vecPos, const std::vector<std::vector<float>> &vecArea, int samplingRatioArea, int pooledHeight, int pooledWidth);
@@ -179,7 +182,7 @@ void _AVX_MNNConvRunForLineDepthwise(float* dst, const float* src, const float* 
 }
 
 static MNNBinaryExecute _AVX2_MNNSelectBinaryFunctionForFloat(int opType) {
-    auto vecF = MNN::selectVector<Vec8, 8>(opType);
+    auto vecF = MNN::selectVector<Vec8, 8, float>(opType);
     if (nullptr != vecF) {
         return vecF;
     }
@@ -279,8 +282,8 @@ void _AVX_MNNGridSampleComputeCord(float* dst, const float* src, size_t inH, siz
         __m256i mask;
         if (areaRemain > PACK_UNIT / 2) {
             for (int i = 0; i < areaRemain - PACK_UNIT / 2; ++i) {
-                flag[2 * i] = -0.f;
-                flag[2 * i + 1] = -0.f;
+                flag[2 * i] = -0.1f;
+                flag[2 * i + 1] = -0.1f;
             }
             mask = _mm256_loadu_si256((__m256i*)flag);
             __m256 grid0 = _mm256_loadu_ps(src);
@@ -296,8 +299,8 @@ void _AVX_MNNGridSampleComputeCord(float* dst, const float* src, size_t inH, siz
             _mm256_maskstore_ps(dst + PACK_UNIT, mask, cord1);
         } else {
             for (int i = 0; i < areaRemain; ++i) {
-                flag[2 * i] = -0.f;
-                flag[2 * i + 1] = -0.f;
+                flag[2 * i] = -0.1f;
+                flag[2 * i + 1] = -0.1f;
             }
             mask = _mm256_loadu_si256((__m256i*)flag);
             __m256 grid0 = _mm256_maskload_ps(src, mask);
@@ -387,7 +390,7 @@ void _AVX_MNNRoiPoolingMax(float* dst, const float* src, int hLen, int wLen, int
 }
 
 void _AVX_MNNRoiAlignMax(float* dst, const float* src, const std::vector<std::vector<int>> &vecPos, const std::vector<std::vector<float>> &vecArea, int samplingRatioArea, int pooledHeight, int pooledWidth) {
-    for (int h = 0; h < pooledHeight; ++h, dst += pooledHeight * PACK_UNIT) {
+    for (int h = 0; h < pooledHeight; ++h, dst += pooledWidth * PACK_UNIT) {
         int preCalcIdx = h * pooledWidth * samplingRatioArea;
         for (int w = 0; w < pooledWidth; ++w) {
             Vec8 res = Vec8(-FLT_MAX);
@@ -413,7 +416,7 @@ void _AVX_MNNRoiAlignMax(float* dst, const float* src, const std::vector<std::ve
 
 void _AVX_MNNRoiAlignAvg(float* dst, const float* src, const std::vector<std::vector<int>> &vecPos, const std::vector<std::vector<float>> &vecArea, int samplingRatioArea, int pooledHeight, int pooledWidth) {
     float invSamplingCnt = 1.f / samplingRatioArea;
-    for (int h = 0; h < pooledHeight; ++h, dst += pooledHeight * PACK_UNIT) {
+    for (int h = 0; h < pooledHeight; ++h, dst += pooledWidth * PACK_UNIT) {
         int preCalcIdx = h * pooledWidth * samplingRatioArea;
         for (int w = 0; w < pooledWidth; ++w) {
             Vec8 res = Vec8(0.f);
@@ -470,7 +473,7 @@ void _AVX_MNNGridSampleComputeCord3D(float* dst, const float* src, size_t inD, s
         __m256i mask;
         if (areaRemain < 3) {
             for (int i = 0; i < areaRemain * 3; i++) {
-                flag[i] = -0.f;
+                flag[i] = -0.1f;
             }
             mask = _mm256_loadu_si256((__m256i*)flag);
             __m256 cord0 = _mm256_loadu_ps(src);
@@ -478,7 +481,7 @@ void _AVX_MNNGridSampleComputeCord3D(float* dst, const float* src, size_t inD, s
             _mm256_maskstore_ps(dst, mask, cord0);
         } else if (areaRemain < 6) {
             for (int i = 0; i < areaRemain * 3 - 8; i++) {
-                flag[i] = -0.f;;
+                flag[i] = -0.1f;;
             }
             mask = _mm256_loadu_si256((__m256i*)flag);
             __m256 cord0 = _mm256_loadu_ps(src);
@@ -489,7 +492,7 @@ void _AVX_MNNGridSampleComputeCord3D(float* dst, const float* src, size_t inD, s
             _mm256_maskstore_ps(dst + PACK_UNIT, mask, cord1);
         } else {
             for (int i = 0; i < areaRemain * 3 - 16; i++) {
-                flag[i] = -0.f;;
+                flag[i] = -0.1f;;
             }
             mask = _mm256_loadu_si256((__m256i*)flag);
             __m256 cord0 = _mm256_loadu_ps(src);
@@ -856,6 +859,7 @@ void _AVX_ExtraInit(void* functions) {
     coreFunction->MNNPoolingAvg = (decltype(coreFunction->MNNPoolingAvg))(MNN::poolingAvg<float, Vec8, 8>);
     // Set min value as 1 << 24
     coreFunction->MNNPoolingMax = (decltype(coreFunction->MNNPoolingMax))(MNN::poolingMax<float, Vec8, 8, -16777216>);
+    coreFunction->MNNPoolingMaxWithRedice = (decltype(coreFunction->MNNPoolingMaxWithRedice))(MNN::poolingMaxWithRedice<float, -16777216>);
     coreFunction->MNNSelectBinaryFunctionForFloat = _AVX2_MNNSelectBinaryFunctionForFloat;
     coreFunction->MNNCopyC4WithStride = _AVX_MNNCopyC4WithStride;
     coreFunction->MNNAddC4WithStride = _AVX_MNNAddC4WithStride;
@@ -874,7 +878,8 @@ void _AVX_ExtraInit(void* functions) {
     coreFunction->MNNDeconvRunForLineDepthwise = _AVX_MNNDeconvRunForLineDepthwise;
     coreFunction->MNNDeconvRunForUnitDepthWise = _AVX_MNNDeconvRunForUnitDepthWise;
     coreFunction->MNNGridSampleComputeCord = _AVX_MNNGridSampleComputeCord;
-    coreFunction->MNNGridSampleInterp = _AVX_MNNGridSampleInterp;
+    coreFunction->MNNGridSampleInterp = MNNGridSampleInterp;
+    coreFunction->MNNGridSampleInterpGrad = MNNGridSampleInterpGrad;
     coreFunction->MNNGridSampleComputeCord3D = _AVX_MNNGridSampleComputeCord3D;
     coreFunction->MNNGridSampleInterp3D = _AVX_MNNGridSampleInterp3D;
     coreFunction->MNNRoiPoolingMax = _AVX_MNNRoiPoolingMax;

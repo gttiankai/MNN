@@ -9,11 +9,17 @@
     if (input1 >= global_size_dim0 || input2 >= global_size_dim1 || input3 >= global_size_dim2) { \
         return;                                                                                   \
     }
-
+inline float4 gelu(float4 in){
+    float4 value = 0.79788458f * (0.044715f * in * in * in + in);
+    float4 x2 = value * value;
+    float4 dst = value > (float4)5.0f ? (float4)1.0f : (value <= -(float4)5.0f ? -(float4)1.0f :
+        (value * (135135.0f + x2 * (17325.0f + x2 * (378.0f + x2)))) / (135135.0f + x2 * (62370.0f + x2 * (3150.0f + x2 * 28.0f))));
+    return (1.0f + dst) * in * 0.5f;
+}
 
 __kernel void unary_buf(GLOBAL_SIZE_3_DIMS
-                        __global const FLOAT *input,
-                        __global FLOAT *output,
+                        __global const INPUT_TYPE *input,
+                        __global OUTPUT_TYPE *output,
                         __private const int height) {
     const int channel_block_idx = get_global_id(0);
     const int w                 = get_global_id(1);
@@ -25,7 +31,8 @@ __kernel void unary_buf(GLOBAL_SIZE_3_DIMS
     const int height_idx = hb % height;
 
     const int offset = (((batch_idx*global_size_dim0+channel_block_idx)*height+height_idx)*global_size_dim1+w) * 4;
-    FLOAT4 in  = vload4(0, input+offset);
-    FLOAT4 out = CONVERT_FLOAT4(OPERATOR);
-    vstore4(out, 0, output+offset);
+    float4 in  = convert_float4(vload4(0, input+offset));
+    float4 out = OPERATOR;
+    vstore4(CONVERT_OUTPUT4(out), 0, output+offset);
 }
+

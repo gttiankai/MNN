@@ -46,7 +46,12 @@ struct Tensor::InsideDescribe {
         View dst;
         int32_t size[3] = {1, 1, 1};
         Tensor* origin;
-        int mask = 0;
+    };
+    struct pad {
+        int32_t left = 0;
+        int32_t right = 0;
+        int32_t bottom = 0;
+        int32_t top = 0;
     };
     enum MemoryType {
         /** The tensor's memory come from Backend */
@@ -69,8 +74,15 @@ struct Tensor::InsideDescribe {
         /** Whether the tensor is a trainable parameter. Trainable parameter should be stored in a different area. */
         TRAINABLE,
     };
+    // For Mask
+    enum StageInfo {
+        GEOMETRY_STAGE = 1,
+        CONVERTED_STAGE = 1 << 1,
+        COMPUTE_SHAPE_STAGE = 1 << 2,
+        CONTENT_NOT_CHANGE = 1 << 3,
+    };
     /** extra tensor info container */
-    struct NativeInsideDescribe : public RefCount {
+    struct NativeInsideDescribe {
     public:
         /** dimension format */
         MNN_DATA_FORMAT dimensionFormat = MNN_DATA_FORMAT_NC4HW4;
@@ -82,8 +94,7 @@ struct Tensor::InsideDescribe {
             void (*handleFreeFunction)(void*);
         } extra;
         MemoryType memoryType = MEMORY_BACKEND;
-        /** for DEVICE tensor only. backend used to manage tensor's device memory. */
-        Backend* backend = nullptr;
+        std::weak_ptr<Command> rasterCommand;
         /** for DEVICE tensor only. */
         int useCount = 0;
         Usage usage = NORMAL;
@@ -95,11 +106,26 @@ struct Tensor::InsideDescribe {
         std::shared_ptr<QuantAttr> quantAttr;
         // Only valid when quantAttr is not nullptr
         DataType type = DataType_DT_FLOAT;
-        AutoRelease<Backend::MemObj> mem;
         bool isMutable = true;
-        int index;
+        int index = -1;
+        int group = 0;
+		int channel_pack_num = 4;
+        bool support_pack16 = true;
+        pad mPads;
+        // For isMutable = false Tensor , determine whether the content can be convert to main backend
+        uint32_t stageMask = 0;
     };
-    SharedPtr<NativeInsideDescribe> mContent;
+    std::shared_ptr<NativeInsideDescribe> mContent;
+    SharedPtr<Backend::MemObj> mem;
+    inline Backend* getBackend() const {
+        return backend;
+    }
+    inline void setBackend(Backend* bn) {
+        backend = bn;
+    }
+private:
+    /** for DEVICE tensor only. backend used to manage tensor's device memory. */
+    Backend* backend = nullptr;
 };
 
 typedef Tensor::InsideDescribe::Usage TensorUsage;
@@ -122,7 +148,7 @@ public:
      * @param dest          shape consumer tensor.
      * @param copyFormat    copy data format or not.
      */
-    static void copyShape(const Tensor* source, Tensor* dest, bool copyFormat = false);
+    static void copyShape(const Tensor* source, Tensor* dest, bool copyFormat = false, bool copyRef = false);
 
     /**
      * @brief set shape for dest tensor from a common int vector.
@@ -161,14 +187,33 @@ public:
     static bool isTileRegion(const Tensor::InsideDescribe::Region& region);
     static bool isDepthToSpaceRegions(const Tensor* output);
     static bool reshapeSlice(Tensor::InsideDescribe::Region& slice, int outside, int inside, int axis);
-    static bool fuseRegion(Tensor::InsideDescribe::Region& srcReg, Tensor::InsideDescribe::Region& dstReg);
+    
+    class FuseRegionStatus;
+    class MNN_PUBLIC FuseWrap {
+    public:
+        FuseWrap();
+        ~ FuseWrap();
+        bool match(const Tensor::InsideDescribe::Region& srcReg, const Tensor::InsideDescribe::Region& dstReg);
+        void apply(const Tensor::InsideDescribe::Region& srcReg, Tensor::InsideDescribe::Region& dstReg);
+    private:
+        FuseRegionStatus* mStatus;
+    };
     static void adjustTensorForCompability(Tensor* t);
     static Tensor::DimensionType getDimType(const Tensor* t);
-    static halide_type_t DataTypeToHalideType(DataType t);
-    static DataType HaildeTypeToDataType(halide_type_t t);
     static std::vector<float> getQuantInfo(const Tensor* t);
     
     static size_t getRawSize(const Tensor* t);
+    static void setRasterInputs(Command* cmd);
+    
+    static bool refTensorContent(Tensor* dst, const Tensor* src);
+
+    static int getTensorChannelPack(const Tensor* tensor);
+
+    static void setTensorChannelPack(const Tensor* tensor, int pack);
+
+    static void setTensorSupportPack(const Tensor* tensor, bool flag);
+
+    static void setTensorPad(const Tensor* tensor, int left, int right, int bottom, int top);
 };
 } // namespace MNN
 

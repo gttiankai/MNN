@@ -1,4 +1,4 @@
-﻿//
+//
 //  GridSampleBufExecution.cpp
 //  MNN
 //
@@ -9,13 +9,13 @@
 #ifndef MNN_OPENCL_BUFFER_CLOSED
 
 #include "backend/opencl/execution/buffer/GridSampleBufExecution.hpp"
-#include "core/TensorUtils.hpp"
 
 namespace MNN {
 namespace OpenCL {
 GridSampleBufExecution::GridSampleBufExecution(const std::vector<Tensor *> &inputs, const MNN::Op *op, Backend *backend)
-    : Execution(backend) {
-
+    : CommonExecution(backend, op) {
+    mUnits.resize(1);
+    auto &unit = mUnits[0];
     mPaddingMode = op->main_as_GridSample()->paddingMode();
     if (op->main_as_GridSample()->alignCorners()) {
         mAlignCorners = 1;
@@ -31,16 +31,17 @@ GridSampleBufExecution::GridSampleBufExecution(const std::vector<Tensor *> &inpu
     std::set<std::string> buildOptions;
     if (op->main_as_GridSample()->mode() == 0) {
         mKernelName = "bilinear_buf";
-        mKernel = runtime->buildKernel("grid_sample_buf", mKernelName, buildOptions);
+        unit.kernel = runtime->buildKernel("grid_sample_buf", mKernelName, buildOptions);
     }
     else {
         mKernelName = "nearest_buf";
-        mKernel = runtime->buildKernel("grid_sample_buf", mKernelName, buildOptions);
+        unit.kernel = runtime->buildKernel("grid_sample_buf", mKernelName, buildOptions);
     }
-    mMaxWorkGroupSize = static_cast<uint32_t>(runtime->getMaxWorkGroupSize(mKernel));
+    mMaxWorkGroupSize = static_cast<uint32_t>(runtime->getMaxWorkGroupSize(unit.kernel));
 }
 
-ErrorCode GridSampleBufExecution::onResize(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) {
+ErrorCode GridSampleBufExecution::onEncode(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) {
+    auto &unit = mUnits[0];
     auto inputTensor = inputs[0];
     auto gridTensor = inputs[1];
     auto outputTensor = outputs[0];
@@ -64,36 +65,27 @@ ErrorCode GridSampleBufExecution::onResize(const std::vector<Tensor *> &inputs, 
     MNN_ASSERT(outW > 0 && outH > 0);
 
     uint32_t idx = 0;
-    mKernel.setArg(idx++, mGlobalWorkSize[0]);
-    mKernel.setArg(idx++, mGlobalWorkSize[1]);
-    mKernel.setArg(idx++, mGlobalWorkSize[2]);
-    mKernel.setArg(idx++, openCLBuffer(inputTensor));
-    mKernel.setArg(idx++, openCLBuffer(gridTensor));
-    mKernel.setArg(idx++, openCLBuffer(outputTensor));
-    mKernel.setArg(idx++, static_cast<uint32_t>(inH));
-    mKernel.setArg(idx++, static_cast<uint32_t>(inW));
-    mKernel.setArg(idx++, static_cast<uint32_t>(outH));
-    mKernel.setArg(idx++, static_cast<uint32_t>(outW));
-    mKernel.setArg(idx++, static_cast<uint32_t>(channelC4));
-    mKernel.setArg(idx++, mPaddingMode);
-    mKernel.setArg(idx++, mAlignCorners);
+    cl_int ret = CL_SUCCESS;
+    ret |= unit.kernel->get().setArg(idx++, mGlobalWorkSize[0]);
+    ret |= unit.kernel->get().setArg(idx++, mGlobalWorkSize[1]);
+    ret |= unit.kernel->get().setArg(idx++, mGlobalWorkSize[2]);
+    ret |= unit.kernel->get().setArg(idx++, openCLBuffer(inputTensor));
+    ret |= unit.kernel->get().setArg(idx++, openCLBuffer(gridTensor));
+    ret |= unit.kernel->get().setArg(idx++, openCLBuffer(outputTensor));
+    ret |= unit.kernel->get().setArg(idx++, static_cast<uint32_t>(inH));
+    ret |= unit.kernel->get().setArg(idx++, static_cast<uint32_t>(inW));
+    ret |= unit.kernel->get().setArg(idx++, static_cast<uint32_t>(outH));
+    ret |= unit.kernel->get().setArg(idx++, static_cast<uint32_t>(outW));
+    ret |= unit.kernel->get().setArg(idx++, static_cast<uint32_t>(channelC4));
+    ret |= unit.kernel->get().setArg(idx++, mPaddingMode);
+    ret |= unit.kernel->get().setArg(idx++, mAlignCorners);
+    MNN_CHECK_CL_SUCCESS(ret, "setArg GridSampleBufExecution");
 
-    mLocalWorkSize = localWS3DDefault(mGlobalWorkSize, mMaxWorkGroupSize, runtime, mKernelName, mKernel).first;
-
-    return NO_ERROR;
-}
-
-ErrorCode GridSampleBufExecution::onExecute(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) {
-#ifdef ENABLE_OPENCL_TIME_PROFILER
-    cl::Event event;
-    run3DKernelDefault(mKernel, mGlobalWorkSize, mLocalWorkSize,
-        mOpenCLBackend->getOpenCLRuntime(), &event);
-
-    int costTime = (int)mOpenCLBackend->getOpenCLRuntime()->getCostTime(&event);
-    MNN_PRINT("kernel cost:%d    us GridSample\n", costTime);
-#else
-    run3DKernelDefault(mKernel, mGlobalWorkSize, mLocalWorkSize, mOpenCLBackend->getOpenCLRuntime());
-#endif
+    mLocalWorkSize = localWS3DDefault(mGlobalWorkSize, mMaxWorkGroupSize, runtime, mKernelName, unit.kernel).first;
+    
+    mOpenCLBackend->recordKernel3d(unit.kernel, mGlobalWorkSize, mLocalWorkSize);
+    unit.globalWorkSize = {mGlobalWorkSize[0], mGlobalWorkSize[1], mGlobalWorkSize[2]};
+    unit.localWorkSize = {mLocalWorkSize[0], mLocalWorkSize[1], mLocalWorkSize[2]};
     return NO_ERROR;
 }
 
@@ -102,6 +94,12 @@ public:
     virtual ~GridSampleBufCreator() = default;
     virtual Execution *onCreate(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs,
         const MNN::Op *op, Backend *backend) const override {
+        for (int i = 0; i < inputs.size(); ++i) {
+            TensorUtils::setTensorSupportPack(inputs[i], false);
+        }
+        for (int i = 0; i < outputs.size(); ++i) {
+            TensorUtils::setTensorSupportPack(outputs[i], false);
+        }
         if (op->main_as_GridSample()->mode() != 0 && op->main_as_GridSample()->mode() != 1) {
             MNN_PRINT("openCL buffer not support interpolate type: %d, fallback to cpu\n", op->main_as_GridSample()->mode());
             return nullptr;
@@ -110,7 +108,7 @@ public:
     }
 };
 
-OpenCLCreatorRegister<GridSampleBufCreator> __GridSampleBuf_op_(OpType_GridSample, BUFFER);
+REGISTER_OPENCL_OP_CREATOR(GridSampleBufCreator, OpType_GridSample, BUFFER);
 
 } // namespace OpenCL
 } // namespace MNN

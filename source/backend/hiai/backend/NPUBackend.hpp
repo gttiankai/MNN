@@ -10,13 +10,15 @@
 #define MNN_NPUBACKEND_H
 
 #include <graph/attr_value.h>
-#include <graph/attr_value.h>
+#include <graph/operator_hiai_reg.h>
+#include <graph/op/all_ops.h>
 #include <graph/compatible/operator_reg.h>
 #include <graph/graph.h>
 #include <graph/model.h>
 #include <graph/compatible/all_ops.h>
 #include <hiai_ir_build.h>
 #include <graph/buffer.h>
+#include <MNN/ErrorCode.hpp>
 #include <core/Backend.hpp>
 #include <core/Execution.hpp>
 #include "HiAiModelManagerService.h"
@@ -41,6 +43,41 @@ namespace MNN {
     typedef void *(*fp_ATrace_endSection) (void);
 #endif
     void NHWC2NCHW(const float* source, float* dest, int b, int c, int area);
+
+    static ge::DataType mapDataType(DataType src) {
+        ge::DataType retVal = ge::DataType::DT_UNDEFINED;
+        switch (src) {
+            case DataType_DT_FLOAT:
+                retVal = ge::DataType::DT_FLOAT;
+                break;
+            case DataType_DT_DOUBLE:
+                retVal = ge::DataType::DT_DOUBLE;
+                break;
+            case DataType_DT_INT32:
+                retVal = ge::DataType::DT_INT32;
+                break;
+            case DataType_DT_UINT8:
+                retVal = ge::DataType::DT_UINT8;
+                break;
+            case DataType_DT_INT16:
+                retVal = ge::DataType::DT_INT16;
+                break;
+            case DataType_DT_INT8:
+                retVal = ge::DataType::DT_INT8;
+                break;
+            case DataType_DT_INT64:
+                retVal = ge::DataType::DT_INT64;
+                break;
+            case DataType_DT_VARIANT:
+                retVal = ge::DataType::DT_FLOAT;
+                break;
+            default:
+                MNN_ASSERT(false);
+                printf("cast Datatype : %d \n", src);
+                break;
+        }
+        return retVal;
+    }
     inline std::vector<int64_t> tensorShapeFormat(const Tensor *input, const Tensor *broadCastInput=nullptr) {
         auto dimSize = input->buffer().dimensions;
         if(broadCastInput != nullptr) {
@@ -266,23 +303,18 @@ namespace MNN {
         virtual void onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTensor) const override;
 
         virtual void onResizeBegin() override;
-        virtual void onResizeEnd() override;
+        virtual ErrorCode onResizeEnd() override;
 
     public:
 
-        void bulidIRModelAndLoad();
-
-        int process(int modelIndex) const ;
+        ErrorCode bulidIRModelAndLoad();
+        int process() const ;
 
         shared_ptr<ge::Operator> getInputOps(const Op *op, int index = 0);
 
         void setOutputOps(const Op *op, vector<shared_ptr<ge::Operator>>&& HIAI_op,
                           const std::vector<Tensor *> &outputs);
         void setNetworkInput(const std::vector<Tensor *> &inputs, const Op* op);
-
-    private:
-
-        int getInOutTensorInfo(string modelName);
 
     public:
 
@@ -303,18 +335,18 @@ namespace MNN {
         static bool addCreator(OpType t, Creator* c);
 
     private:
-        shared_ptr<hiai::AiModelMngerClient> mMgrClient;
 
         vector<string> mModelName;
 
-        vector<hiai::TensorDimension> mInputDimension;
-        vector<hiai::TensorDimension> mOutputDimension;
-
-        vector<shared_ptr<hiai::AiTensor>> mInputTensors;
-        vector<shared_ptr<hiai::AiTensor>> mOutputTensors;
         MNNTensorList mMNNOutTensors;
         const NPURuntime* mNPURuntime;
         BackendConfig::PrecisionMode mPrecision;
+
+        shared_ptr<hiai::IBuiltModel> builtModel;
+        shared_ptr<hiai::IModelManager> modelManager;
+        vector<shared_ptr<hiai::INDTensorBuffer>> inputTensors;
+        vector<shared_ptr<hiai::INDTensorBuffer>> outputTensors;
+
 #ifdef HIAI_DEBUG
         void *(*ATrace_beginSection) (const char* sectionName);
         void *(*ATrace_endSection) (void);

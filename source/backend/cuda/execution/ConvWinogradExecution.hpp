@@ -14,10 +14,19 @@
 #include "MNNCUDADefine.hpp"
 #include "MNNCUDAFunction.cuh"
 
+#ifdef ENABLE_CUDA_TUNE_PARAM
+#include "cutlass_common/tune/CutlassGemmTuneCommonExecution.hpp"
+#endif
 namespace MNN {
 namespace CUDA {
 
-class ConvWinogradExecution : public Execution {
+class ConvWinogradExecution : 
+    #ifdef ENABLE_CUDA_TUNE_PARAM
+    public CutlassGemmTuneCommonExecution
+    #else
+    public Execution 
+    #endif
+{
 public:
     struct Resource;
     static bool isValid(const Convolution2D* conv);
@@ -54,7 +63,7 @@ private:
     GemmBatchedCuda_F32_F32_Linear_AlignCuda_Row_Column mGemmBatchedCudaF32F32Ln;
 
     std::shared_ptr<Tensor> workspaceTensor;
-    uint8_t* mWorkspace;
+    void* mWorkspace;
 
     CutlassGemmInfo mGemmInfo;
 
@@ -62,6 +71,7 @@ private:
     int mPadY;
     int mBlock2;
     int mGpuComputeCap;
+    bool mIsTuned =false;
     int mActivationType;
     bool mFp16Infer = false;
     bool mFp32Infer = false;

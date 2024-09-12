@@ -117,8 +117,9 @@ namespace MNN {
             MNN_ASSERT(iter != mInputIdxMap.end());
             memcpy((void*)&mInputTensors[iter->second], &srcTensor, sizeof(void*));
         } else if (isOutputCopy) {
-            MNN_ASSERT(mOutputIdxMap.find(srcTensor) != mOutputIdxMap.end());
-            memcpy(dstTensor->host<void>(), srcTensor->host<void>(), std::min(srcTensor->size(), dstTensor->size()));
+            // MNN_ASSERT(mOutputIdxMap.find(srcTensor) != mOutputIdxMap.end());
+            int srcSize = static_cast<int>(TensorUtils::getRawSize(srcTensor) * srcTensor->getType().bytes());
+            memcpy(dstTensor->host<void>(), srcTensor->host<void>(), std::min(srcSize, dstTensor->size()));
         }
     }
 
@@ -126,8 +127,8 @@ namespace MNN {
         mCoreMLLayerPtrs.clear();
     }
 
-    void CoreMLBackend::onResizeEnd() {
-        buildModel();
+    ErrorCode CoreMLBackend::onResizeEnd() {
+        return buildModel();
     }
 
     std::string CoreMLBackend::getTensorName(const Tensor* t) {
@@ -136,7 +137,7 @@ namespace MNN {
             //printf("tensorName: %d\n", iter->second);
             return std::to_string(iter->second);
         }
-        int idx = mTensorIdxMap.size();
+        int idx = static_cast<int>(mTensorIdxMap.size());
         mTensorIdxMap.insert(std::make_pair(t, idx));
         auto idName = std::to_string(idx);
         if (TensorUtils::getDescribe(t)->usage == Tensor::InsideDescribe::CONSTANT) {
@@ -147,6 +148,9 @@ namespace MNN {
             constantLayer->loadconstantnd = create<CoreML__Specification__LoadConstantNDLayerParams>();
             core_ml__specification__load_constant_ndlayer_params__init(constantLayer->loadconstantnd);
             auto shape = t->shape();
+            if (shape.size() == 0) {
+                shape = {1};
+            }
             constantLayer->loadconstantnd->n_shape = shape.size();
             constantLayer->loadconstantnd->shape = create<uint64_t>(constantLayer->loadconstantnd->n_shape);
             for (int i = 0; i < shape.size(); i++) {
@@ -222,7 +226,7 @@ namespace MNN {
         }
         *describe = des;
     }
-    void CoreMLBackend::buildModel() {
+    ErrorCode CoreMLBackend::buildModel() {
         mInputTensors.resize(mInputIdxMap.size());
         mCoreMLModel_->description = create<CoreML__Specification__ModelDescription>();
         core_ml__specification__model_description__init(mCoreMLModel_->description);
@@ -253,9 +257,14 @@ namespace MNN {
         }
 #endif
         if (mCoreMLModel_->neuralnetwork->n_layers <= 0) {
-            return;
+            return NO_EXECUTION;
         }
-        mCoreMLExecutor->compileModel(mCoreMLModel_.get());
+        bool success = mCoreMLExecutor->compileModel(mCoreMLModel_.get());
+        if (success) {
+            return NO_ERROR;
+        } else {
+            return NO_EXECUTION;
+        }
     }
     void CoreMLBackend::invokeModel() const {
         if (mCoreMLModel_->neuralnetwork->n_layers <= 0) {
@@ -318,6 +327,6 @@ namespace MNN {
             return;
         }
         registerCoreMLOps();
-        MNNInsertExtraRuntimeCreator(MNN_FORWARD_NN, new CoreMLBackendCreator, true);
+        MNNInsertExtraRuntimeCreator(MNN_FORWARD_NN, new CoreMLBackendCreator, false);
     }
 }

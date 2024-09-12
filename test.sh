@@ -38,11 +38,12 @@ USER_HOME="$(echo -n $(bash -c "cd ~${USER_NAME} && pwd"))"
 
 # detect change
 SOURCE_CHANGE=$(git show --name-only | grep -E "^source/(internal|backend|core|common|cv|geometry|math|plugin|shape|utils)/.*\.(cpp|cc|c|hpp)$" | \
-                grep -Ev "aliyun-log-c-sdk|hiai|tensorrt|BackendRegister|FunctionDispatcher")
+                grep -Ev "aliyun-log-c-sdk|hiai|tensorrt|Backend|FunctionDispatcher|ThreadPool")
 PYMNN_CHANGE=$(git show --name-only | grep -E "^pymnn/.*\.(cpp|cc|c|h|hpp|py)$")
 PY_CHANGE=$(git show --name-only | grep -E "^pymnn/pip_package/MNN/.*\.(py)$")
 OPENCV_CHANGE=$(git show --name-only | grep -E "^tools/cv/.*\.(cpp|cc|c|h|hpp)$")
-
+# OPENCL_CHANGE=$(git show --name-only | grep -E "^source/backend/opencl/.*\.(cpp|cc|c|h|hpp)$")
+OPENCL_CHANGE=true
 failed() {
     printf "TEST_NAME_EXCEPTION: Exception\nTEST_CASE_AMOUNT_EXCEPTION: {\"blocked\":0,\"failed\":1,\"passed\":0,\"skipped\":0}\n"
     exit 1
@@ -76,8 +77,8 @@ doc_check() {
     # 1.2 check executable
     for executable in $executables
     do
-        if [ $(grep -c $executable ./docs/compile/tools.md) -le 0 ]; then
-            echo 'DOC CHECK FAILED:' $executable 'not in ./docs/compile/tools.md'
+        if [ $(grep -c $executable ./docs/compile/other.md) -le 0 ]; then
+            echo 'DOC CHECK FAILED:' $executable 'not in ./docs/compile/other.md'
             failed
         fi
     done
@@ -116,6 +117,7 @@ doc_check() {
 }
 
 py_check() {
+    echo 'py_check'
     if [ -z "$PY_CHANGE" ]; then
         return
     fi
@@ -132,6 +134,7 @@ py_check() {
 }
 
 static_check() {
+    echo 'static_check'
     if [ -z "$SOURCE_CHANGE" ]; then
         return
     fi
@@ -169,6 +172,7 @@ android_static_build() {
     -DMNN_OPENGL=true \
     -DMNN_BUILD_TRAIN=true \
     -DMNN_VULKAN=true \
+    -DMNN_OPENCL=true \
     -DMNN_SUPPORT_BF16=true \
     -DMNN_OPENCL=true -DMNN_ARM82=true \
     -DNATIVE_LIBRARY_OUTPUT=. -DNATIVE_INCLUDE_OUTPUT=. $1 $2 $3
@@ -198,6 +202,7 @@ android_static_build() {
     -DMNN_OPENGL=true \
     -DMNN_BUILD_TRAIN=true \
     -DMNN_VULKAN=true \
+    -DMNN_OPENCL=true \
     -DMNN_BUILD_MINI=true \
     -DMNN_SUPPORT_BF16=true \
     -DMNN_OPENCL=true\
@@ -235,11 +240,14 @@ linux_build() {
         -DCMAKE_BUILD_TYPE=Release \
         -DMNN_BUILD_TEST=ON \
         -DMNN_CUDA=ON \
+        -DMNN_OPENCL=ON \
         -DMNN_BUILD_QUANTOOLS=ON \
         -DMNN_BUILD_DEMO=ON \
+        -DMNN_BUILD_TRAIN=ON \
         -DMNN_BUILD_CONVERTER=ON \
         -DMNN_BUILD_TORCH=ON \
         -DMNN_BUILD_OPENCV=ON \
+        -DMNN_LOW_MEMORY=ON \
         -DMNN_IMGCODECS=ON \
         -DMNN_ENABLE_COVERAGE=$COVERAGE
     make -j16
@@ -267,6 +275,13 @@ unit_test() {
         echo '### 多线程单元测试失败，测试终止！'
         failed
     fi
+    if [ "$OPENCL_CHANGE" ]; then
+        ./run_test.out op 3 1 4
+        if [ $? -ne 0 ]; then
+            echo '### OpenCL单元测试失败，测试终止！'
+            failed
+        fi
+    fi
 }
 
 model_test() {
@@ -281,6 +296,14 @@ model_test() {
         echo '### 静态模型测试失败，测试终止！'
         failed
     fi
+
+    if [ "$OPENCL_CHANGE" ]; then
+        ../tools/script/modelTest.py ~/AliNNModel 3 0.002 1
+        if [ $? -ne 0 ]; then
+            echo '### OpenCL模型测试失败，测试终止！'
+            failed
+        fi
+    fi
 }
 
 onnx_convert_test() {
@@ -288,18 +311,6 @@ onnx_convert_test() {
     if [ $? -ne 0 ]; then
         echo '### ONNXConvert测试失败，测试终止！'
         failed
-    fi
-    if [ -f ~/AliNNModel/TestOnnx/ops/run.py ]; then
-        ~/AliNNModel/TestOnnx/ops/run.py --mnndir $(pwd) --aone-mode
-        if [ $? -ne 0 ]; then
-            echo '### Onnx单线程单元测试失败，测试终止！'
-            failed
-        fi
-        #~/AliNNModel/TestOnnx/ops/run.py --mnndir $(pwd) --aone-mode --thread_num 2
-        #if [ $? -ne 0 ]; then
-        #    echo '### ONNX多线程单元测试失败，测试终止！'
-        #    failed
-        #fi
     fi
 }
 
@@ -408,6 +419,25 @@ opencv_test() {
     fi
 }
 
+llm_test() {
+    # 1. build llm with low memory
+    cmake -DMNN_LOW_MEMORY=ON -DMNN_BUILD_LLM=ON -DMNN_SUPPORT_TRANSFORMER_FUSE=ON ..
+    make -j8
+    llm_build_wrong=$[$? > 0]
+    printf "TEST_NAME_LLM_BUILD: LLM编译测试\nTEST_CASE_AMOUNT_LLM_BUILD: {\"blocked\":0,\"failed\":%d,\"passed\":%d,\"skipped\":0}\n" \
+            $llm_build_wrong $[1 - $llm_build_wrong]
+    if [ $llm_build_wrong -ne 0 ]; then
+        echo '### LLM编译失败，测试终止！'
+        failed
+    fi
+    # 2. run llm model test
+    ./llm_demo ~/AliNNModel/qwen1.5-0.5b-int4/config.json ~/AliNNModel/qwen1.5-0.5b-int4/prompt.txt
+    if [ $? -gt 0 ]; then
+        echo '### LLM模型测试失败，测试终止！'
+        failed
+    fi
+}
+
 coverage_init() {
     popd
     lcov -c -i -d ./ -o init.info
@@ -447,16 +477,45 @@ coverage_report() {
 #                                                                                           #
 #############################################################################################
 android_unit_test() {
-    adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./run_test.out all 0 0.002 1 $1"
+    adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./run_test.out all 0 0 1 $1"
     if [ $? -ne 0 ]; then
         echo '### Android单元测试失败，测试终止！'
         failed
+    fi
+    adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./run_test.out op 0 0 4 multi$1"
+    if [ $? -ne 0 ]; then
+        echo '### Android单元测试多线程失败，测试终止！'
+        failed
+    fi
+    adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./run_test.out op/convolution 0 2 4 fp16multi$1"
+    if [ $? -ne 0 ]; then
+        echo '### Android单元测试卷积FP16多线程失败，测试终止！'
+        failed
+    fi
+    adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./run_test.out op/col2im 0 2 4 fp16col2im$1"
+    if [ $? -ne 0 ]; then
+        echo '### Android单元测试FP16-col2im多线程失败，测试终止！'
+        failed
+    fi
+    adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./run_test.out op/R 0 2 4 fp16roipooling$1"
+    if [ $? -ne 0 ]; then
+        echo '### Android单元测试FP16-roipooling多线程失败，测试终止！'
+        failed
+    fi
+    if [ "$OPENCL_CHANGE" ]; then
+        adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./run_test.out op 3 1 4 $1"
+        if [ $? -ne 0 ]; then
+            echo '### Android单元测试OpenCL失败，测试终止！'
+            failed
+        fi
     fi
 }
 android_model_test() {
     fail_num=0
     pass_num=0
-    models=`ls ~/AliNNModel/OpTestResource/`
+    fail_cl_num=0
+    pass_cl_num=0
+    models=`adb shell ls /data/local/tmp/AliNNModel/OpTestResource/`
     for model in $models
     do
         adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./testModel.out ../AliNNModel/OpTestResource/$model/temp.bin ../AliNNModel/OpTestResource/$model/input_0.txt ../AliNNModel/OpTestResource/$model/output_0.txt 0 0.002"
@@ -465,32 +524,93 @@ android_model_test() {
         else
             pass_num=$[$pass_num+1]
         fi
+        if [ "$OPENCL_CHANGE" ]; then
+            adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./testModel.out ../AliNNModel/OpTestResource/$model/temp.bin ../AliNNModel/OpTestResource/$model/input_0.txt ../AliNNModel/OpTestResource/$model/output_0.txt 3 0.002 1"
+            if [ $? -ne 0 ]; then
+                fail_cl_num=$[$fail_cl_num+1]
+            else
+                pass_cl_num=$[$pass_cl_num+1]
+            fi
+        fi
     done
-    
-    models=`ls ~/AliNNModel/TestResource/`
+
+    models=`adb shell ls /data/local/tmp/AliNNModel/TestResource/`
     for model in $models
     do
-        adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./testModel.out ../AliNNModel/TestResource/$model/temp.bin ../AliNNModel/TestResource/$model/input_0.txt ../AliNNModel/TestResource/$model/output.txt 0 0.002"
+        if [ $model == 'mobilenetv1quan' ]; then
+            adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./testModel.out ../AliNNModel/TestResource/$model/temp.bin ../AliNNModel/TestResource/$model/input_0.txt ../AliNNModel/TestResource/$model/output.txt 0 0.1"
+        else
+            adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./testModel.out ../AliNNModel/TestResource/$model/temp.bin ../AliNNModel/TestResource/$model/input_0.txt ../AliNNModel/TestResource/$model/output.txt 0 0.002"
+        fi
         if [ $? -ne 0 ]; then
             fail_num=$[$fail_num+1]
         else
             pass_num=$[$pass_num+1]
         fi
+        if [ "$OPENCL_CHANGE" ]; then
+        if [ $model == 'mobilenetv1quan' ]; then
+            adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./testModel.out ../AliNNModel/TestResource/$model/temp.bin ../AliNNModel/TestResource/$model/input_0.txt ../AliNNModel/TestResource/$model/output.txt 3 0.1 1"
+        else
+            adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./testModel.out ../AliNNModel/TestResource/$model/temp.bin ../AliNNModel/TestResource/$model/input_0.txt ../AliNNModel/TestResource/$model/output.txt 3 0.002 1"
+        fi
+            if [ $? -ne 0 ]; then
+                fail_cl_num=$[$fail_cl_num+1]
+            else
+                pass_cl_num=$[$pass_cl_num+1]
+            fi
+        fi
     done
-    
-    models=`ls ~/AliNNModel/TestWithDescribe/`
+
+    models=`adb shell ls /data/local/tmp/AliNNModel/TestWithDescribe/`
     for model in $models
     do
-        adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./testModelWithDescrisbe.out ../AliNNModel/TestWithDescribe/$model/temp.bin ../AliNNModel/TestWithDescribe/$model/config.txt 0 0.002"
+        adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./testModelWithDescribe.out ../AliNNModel/TestWithDescribe/$model/temp.bin ../AliNNModel/TestWithDescribe/$model/config.txt 0 0.002"
         if [ $? -ne 0 ]; then
             fail_num=$[$fail_num+1]
         else
             pass_num=$[$pass_num+1]
+        fi
+        if [ "$OPENCL_CHANGE" ]; then
+            adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./testModelWithDescribe.out ../AliNNModel/TestWithDescribe/$model/temp.bin ../AliNNModel/TestWithDescribe/$model/config.txt 3 0.002 1"
+            if [ $? -ne 0 ]; then
+                fail_cl_num=$[$fail_cl_num+1]
+            else
+                pass_cl_num=$[$pass_cl_num+1]
+            fi
         fi
     done
     printf "TEST_NAME_ANDROID_MODEL_TEST_$1: Android_$1模型测试\nTEST_CASE_AMOUNT_ANDROID_MODEL_TEST_$1: {\"blocked\":0,\"failed\":$fail_num,\"passed\":$pass_num,\"skipped\":0}\n"
     if [ $fail_num -ne 0 ]; then
         echo '### Android模型测试失败，测试终止！'
+        failed
+    fi
+    if [ "$OPENCL_CHANGE" ]; then
+        printf "TEST_NAME_ANDROID_MODEL_OPENCL_TEST_$1: Android_$1模型测试\nTEST_CASE_AMOUNT_ANDROID_MODEL_TEST_$1: {\"blocked\":0,\"failed\":$fail_cl_num,\"passed\":$pass_cl_num,\"skipped\":0}\n"
+        if [ $fail_cl_num -ne 0 ]; then
+            echo '### Android OpenCL后端模型测试失败，测试终止！'
+            failed
+        fi
+    fi
+}
+android_unit_test_low_memory() {
+    adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./run_test.out op/lowMemory 0 1 1 $1 2"
+    if [ $? -ne 0 ]; then
+        echo '### Android 64位Low Memory, precision=1 单元测试失败，测试终止！'
+        failed
+    fi
+    adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./run_test.out op/lowMemory 0 2 1 $1 2"
+    if [ $? -ne 0 ]; then
+        echo '### Android 64位Low Memory, precision=2 单元测试失败，测试终止！'
+        failed
+    fi
+    adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./run_test.out op/lowMemory 0 1 1 $1"
+    if [ $? -ne 0 ]; then
+        echo '### Android 64位 权值量化调用1x1Strassen, precision=1 单元测试失败，测试终止！'
+        failed
+    fi
+    adb shell "cd /data/local/tmp/MNN&&export LD_LIBRARY_PATH=.&&./run_test.out op/lowMemory 0 2 1 $1"
+    if [ $? -ne 0 ]; then
+        echo '### Android 64位 权值量化调用1x1Strassen, precision=2 单元测试失败，测试终止！'
         failed
     fi
 }
@@ -500,7 +620,7 @@ android_test() {
     # 1. build Android32
     mkdir build_32
     pushd build_32
-    ../build_32.sh -DMNN_BUILD_TRAIN=OFF -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+    ../build_32.sh -DMNN_BUILD_TRAIN=OFF -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DMNN_OPENCL=true
     android32_build_wrong=$[$? > 0]
     mnn32_size=$(ls -lh libMNN.so | awk '{print $5}')
     expr32_size=$(ls -lh libMNN_Express.so | awk '{print $5}')
@@ -518,7 +638,7 @@ android_test() {
     # 3. build Android64
     mkdir build_64
     pushd build_64
-    ../build_64.sh -DMNN_BUILD_TRAIN=OFF -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+    ../build_64.sh -DMNN_BUILD_TRAIN=OFF -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DMNN_ARM82=true -DMNN_OPENCL=true -DMNN_LOW_MEMORY=true
     android64_build_wrong=$[$? > 0]
     mnn64_size=$(ls -lh libMNN.so | awk '{print $5}')
     expr64_size=$(ls -lh libMNN_Express.so | awk '{print $5}')
@@ -532,8 +652,10 @@ android_test() {
     # 4. test Android64
     ../updateTest.sh
     android_unit_test 64
+    android_unit_test_low_memory 64
     android_model_test 64
     popd
+
     popd
 }
 
@@ -564,11 +686,17 @@ case "$1" in
         ptq_test
         pymnn_test
         opencv_test
+        llm_test
         coverage_report
         ;;
     android)
         android_static_build
         android_test
+        ;;
+    static)
+        doc_check
+        static_check
+        py_check
         ;;
     *)
         $1

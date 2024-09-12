@@ -942,6 +942,9 @@ struct IDSTQuanT : public flatbuffers::NativeTable {
   int32_t aMin;
   int32_t readType;
   bool has_scaleInt;
+  bool shapeInt32;
+  uint32_t weightSize;
+  std::vector<uint32_t> index;
   IDSTQuanT()
       : type(0),
         useInt32(false),
@@ -951,7 +954,9 @@ struct IDSTQuanT : public flatbuffers::NativeTable {
         aMax(0),
         aMin(0),
         readType(0),
-        has_scaleInt(false) {
+        has_scaleInt(false),
+        shapeInt32(false),
+        weightSize(0) {
   }
 };
 
@@ -993,6 +998,15 @@ struct IDSTQuan FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   bool has_scaleInt() const {
     return GetField<uint8_t>(24, 0) != 0;
   }
+  bool shapeInt32() const {
+    return GetField<uint8_t>(26, 0) != 0;
+  }
+  uint32_t weightSize() const {
+    return GetField<uint32_t>(28, 0);
+  }
+  const flatbuffers::Vector<uint32_t> *index() const {
+    return GetPointer<const flatbuffers::Vector<uint32_t> *>(30);
+  }
   bool Verify(flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyOffset(verifier, 4) &&
@@ -1008,6 +1022,10 @@ struct IDSTQuan FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
            VerifyField<int32_t>(verifier, 20) &&
            VerifyField<int32_t>(verifier, 22) &&
            VerifyField<uint8_t>(verifier, 24) &&
+           VerifyField<uint8_t>(verifier, 26) &&
+           VerifyField<uint32_t>(verifier, 28) &&
+           VerifyOffset(verifier, 30) &&
+           verifier.VerifyVector(index()) &&
            verifier.EndTable();
   }
   IDSTQuanT *UnPack(const flatbuffers::resolver_function_t *_resolver = nullptr) const;
@@ -1051,6 +1069,15 @@ struct IDSTQuanBuilder {
   void add_has_scaleInt(bool has_scaleInt) {
     fbb_.AddElement<uint8_t>(24, static_cast<uint8_t>(has_scaleInt), 0);
   }
+  void add_shapeInt32(bool shapeInt32) {
+    fbb_.AddElement<uint8_t>(26, static_cast<uint8_t>(shapeInt32), 0);
+  }
+  void add_weightSize(uint32_t weightSize) {
+    fbb_.AddElement<uint32_t>(28, weightSize, 0);
+  }
+  void add_index(flatbuffers::Offset<flatbuffers::Vector<uint32_t>> index) {
+    fbb_.AddOffset(30, index);
+  }
   explicit IDSTQuanBuilder(flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -1075,8 +1102,13 @@ inline flatbuffers::Offset<IDSTQuan> CreateIDSTQuan(
     int32_t aMax = 0,
     int32_t aMin = 0,
     int32_t readType = 0,
-    bool has_scaleInt = false) {
+    bool has_scaleInt = false,
+    bool shapeInt32 = false,
+    uint32_t weightSize = 0,
+    flatbuffers::Offset<flatbuffers::Vector<uint32_t>> index = 0) {
   IDSTQuanBuilder builder_(_fbb);
+  builder_.add_index(index);
+  builder_.add_weightSize(weightSize);
   builder_.add_readType(readType);
   builder_.add_aMin(aMin);
   builder_.add_aMax(aMax);
@@ -1086,6 +1118,7 @@ inline flatbuffers::Offset<IDSTQuan> CreateIDSTQuan(
   builder_.add_type(type);
   builder_.add_alpha(alpha);
   builder_.add_buffer(buffer);
+  builder_.add_shapeInt32(shapeInt32);
   builder_.add_has_scaleInt(has_scaleInt);
   builder_.add_useInt32(useInt32);
   return builder_.Finish();
@@ -1106,13 +1139,15 @@ struct QuantizedFloatParamT : public flatbuffers::NativeTable {
   int8_t clampMin;
   int8_t clampMax;
   std::vector<int32_t> winogradAttr;
+  DataType outputDataType;
   QuantizedFloatParamT()
       : method(QuantizeAlgo_DEFAULT),
         nbits(8),
         zeroPoint(0),
         outputZeroPoint(0),
         clampMin(-128),
-        clampMax(127) {
+        clampMax(127),
+        outputDataType(DataType_DT_INT8) {
   }
 };
 
@@ -1154,6 +1189,9 @@ struct QuantizedFloatParam FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table 
   const flatbuffers::Vector<int32_t> *winogradAttr() const {
     return GetPointer<const flatbuffers::Vector<int32_t> *>(24);
   }
+  DataType outputDataType() const {
+    return static_cast<DataType>(GetField<int32_t>(26, 6));
+  }
   bool Verify(flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyOffset(verifier, 4) &&
@@ -1172,6 +1210,7 @@ struct QuantizedFloatParam FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table 
            VerifyField<int8_t>(verifier, 22) &&
            VerifyOffset(verifier, 24) &&
            verifier.VerifyVector(winogradAttr()) &&
+           VerifyField<int32_t>(verifier, 26) &&
            verifier.EndTable();
   }
   QuantizedFloatParamT *UnPack(const flatbuffers::resolver_function_t *_resolver = nullptr) const;
@@ -1215,6 +1254,9 @@ struct QuantizedFloatParamBuilder {
   void add_winogradAttr(flatbuffers::Offset<flatbuffers::Vector<int32_t>> winogradAttr) {
     fbb_.AddOffset(24, winogradAttr);
   }
+  void add_outputDataType(DataType outputDataType) {
+    fbb_.AddElement<int32_t>(26, static_cast<int32_t>(outputDataType), 6);
+  }
   explicit QuantizedFloatParamBuilder(flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -1239,8 +1281,10 @@ inline flatbuffers::Offset<QuantizedFloatParam> CreateQuantizedFloatParam(
     int8_t outputZeroPoint = 0,
     int8_t clampMin = -128,
     int8_t clampMax = 127,
-    flatbuffers::Offset<flatbuffers::Vector<int32_t>> winogradAttr = 0) {
+    flatbuffers::Offset<flatbuffers::Vector<int32_t>> winogradAttr = 0,
+    DataType outputDataType = DataType_DT_INT8) {
   QuantizedFloatParamBuilder builder_(_fbb);
+  builder_.add_outputDataType(outputDataType);
   builder_.add_winogradAttr(winogradAttr);
   builder_.add_nbits(nbits);
   builder_.add_tensorScale(tensorScale);
@@ -1265,6 +1309,7 @@ struct Convolution2DT : public flatbuffers::NativeTable {
   std::unique_ptr<IDSTQuanT> quanParameter;
   std::unique_ptr<QuantizedFloatParamT> symmetricQuan;
   std::unique_ptr<SparseCommonT> sparseParameter;
+  std::vector<int64_t> external;
   Convolution2DT() {
   }
 };
@@ -1292,6 +1337,9 @@ struct Convolution2D FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   const SparseCommon *sparseParameter() const {
     return GetPointer<const SparseCommon *>(14);
   }
+  const flatbuffers::Vector<int64_t> *external() const {
+    return GetPointer<const flatbuffers::Vector<int64_t> *>(16);
+  }
   bool Verify(flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyOffset(verifier, 4) &&
@@ -1306,6 +1354,8 @@ struct Convolution2D FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
            verifier.VerifyTable(symmetricQuan()) &&
            VerifyOffset(verifier, 14) &&
            verifier.VerifyTable(sparseParameter()) &&
+           VerifyOffset(verifier, 16) &&
+           verifier.VerifyVector(external()) &&
            verifier.EndTable();
   }
   Convolution2DT *UnPack(const flatbuffers::resolver_function_t *_resolver = nullptr) const;
@@ -1334,6 +1384,9 @@ struct Convolution2DBuilder {
   void add_sparseParameter(flatbuffers::Offset<SparseCommon> sparseParameter) {
     fbb_.AddOffset(14, sparseParameter);
   }
+  void add_external(flatbuffers::Offset<flatbuffers::Vector<int64_t>> external) {
+    fbb_.AddOffset(16, external);
+  }
   explicit Convolution2DBuilder(flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -1353,8 +1406,10 @@ inline flatbuffers::Offset<Convolution2D> CreateConvolution2D(
     flatbuffers::Offset<flatbuffers::Vector<float>> bias = 0,
     flatbuffers::Offset<IDSTQuan> quanParameter = 0,
     flatbuffers::Offset<QuantizedFloatParam> symmetricQuan = 0,
-    flatbuffers::Offset<SparseCommon> sparseParameter = 0) {
+    flatbuffers::Offset<SparseCommon> sparseParameter = 0,
+    flatbuffers::Offset<flatbuffers::Vector<int64_t>> external = 0) {
   Convolution2DBuilder builder_(_fbb);
+  builder_.add_external(external);
   builder_.add_sparseParameter(sparseParameter);
   builder_.add_symmetricQuan(symmetricQuan);
   builder_.add_quanParameter(quanParameter);
@@ -1371,6 +1426,7 @@ struct Convolution3DT : public flatbuffers::NativeTable {
   std::unique_ptr<Convolution3DCommonT> common;
   std::vector<float> weight;
   std::vector<float> bias;
+  std::vector<int64_t> external;
   Convolution3DT() {
   }
 };
@@ -1389,6 +1445,9 @@ struct Convolution3D FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   const flatbuffers::Vector<float> *bias() const {
     return GetPointer<const flatbuffers::Vector<float> *>(8);
   }
+  const flatbuffers::Vector<int64_t> *external() const {
+    return GetPointer<const flatbuffers::Vector<int64_t> *>(10);
+  }
   bool Verify(flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyOffset(verifier, 4) &&
@@ -1397,6 +1456,8 @@ struct Convolution3D FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
            verifier.VerifyVector(weight()) &&
            VerifyOffset(verifier, 8) &&
            verifier.VerifyVector(bias()) &&
+           VerifyOffset(verifier, 10) &&
+           verifier.VerifyVector(external()) &&
            verifier.EndTable();
   }
   Convolution3DT *UnPack(const flatbuffers::resolver_function_t *_resolver = nullptr) const;
@@ -1416,6 +1477,9 @@ struct Convolution3DBuilder {
   void add_bias(flatbuffers::Offset<flatbuffers::Vector<float>> bias) {
     fbb_.AddOffset(8, bias);
   }
+  void add_external(flatbuffers::Offset<flatbuffers::Vector<int64_t>> external) {
+    fbb_.AddOffset(10, external);
+  }
   explicit Convolution3DBuilder(flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -1432,8 +1496,10 @@ inline flatbuffers::Offset<Convolution3D> CreateConvolution3D(
     flatbuffers::FlatBufferBuilder &_fbb,
     flatbuffers::Offset<Convolution3DCommon> common = 0,
     flatbuffers::Offset<flatbuffers::Vector<float>> weight = 0,
-    flatbuffers::Offset<flatbuffers::Vector<float>> bias = 0) {
+    flatbuffers::Offset<flatbuffers::Vector<float>> bias = 0,
+    flatbuffers::Offset<flatbuffers::Vector<int64_t>> external = 0) {
   Convolution3DBuilder builder_(_fbb);
+  builder_.add_external(external);
   builder_.add_bias(bias);
   builder_.add_weight(weight);
   builder_.add_common(common);
@@ -2775,6 +2841,7 @@ struct ScaleT : public flatbuffers::NativeTable {
   int32_t channels;
   std::vector<float> scaleData;
   std::vector<float> biasData;
+  std::vector<int64_t> external;
   ScaleT()
       : channels(0) {
   }
@@ -2794,6 +2861,9 @@ struct Scale FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   const flatbuffers::Vector<float> *biasData() const {
     return GetPointer<const flatbuffers::Vector<float> *>(8);
   }
+  const flatbuffers::Vector<int64_t> *external() const {
+    return GetPointer<const flatbuffers::Vector<int64_t> *>(10);
+  }
   bool Verify(flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyField<int32_t>(verifier, 4) &&
@@ -2801,6 +2871,8 @@ struct Scale FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
            verifier.VerifyVector(scaleData()) &&
            VerifyOffset(verifier, 8) &&
            verifier.VerifyVector(biasData()) &&
+           VerifyOffset(verifier, 10) &&
+           verifier.VerifyVector(external()) &&
            verifier.EndTable();
   }
   ScaleT *UnPack(const flatbuffers::resolver_function_t *_resolver = nullptr) const;
@@ -2820,6 +2892,9 @@ struct ScaleBuilder {
   void add_biasData(flatbuffers::Offset<flatbuffers::Vector<float>> biasData) {
     fbb_.AddOffset(8, biasData);
   }
+  void add_external(flatbuffers::Offset<flatbuffers::Vector<int64_t>> external) {
+    fbb_.AddOffset(10, external);
+  }
   explicit ScaleBuilder(flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -2836,8 +2911,10 @@ inline flatbuffers::Offset<Scale> CreateScale(
     flatbuffers::FlatBufferBuilder &_fbb,
     int32_t channels = 0,
     flatbuffers::Offset<flatbuffers::Vector<float>> scaleData = 0,
-    flatbuffers::Offset<flatbuffers::Vector<float>> biasData = 0) {
+    flatbuffers::Offset<flatbuffers::Vector<float>> biasData = 0,
+    flatbuffers::Offset<flatbuffers::Vector<int64_t>> external = 0) {
   ScaleBuilder builder_(_fbb);
+  builder_.add_external(external);
   builder_.add_biasData(biasData);
   builder_.add_scaleData(scaleData);
   builder_.add_channels(channels);
@@ -3256,13 +3333,15 @@ struct RoiParametersT : public flatbuffers::NativeTable {
   int32_t samplingRatio;
   bool aligned;
   PoolType poolType;
+  bool outputGrad;
   RoiParametersT()
       : pooledWidth(0),
         pooledHeight(0),
         spatialScale(0.0f),
         samplingRatio(-1),
         aligned(false),
-        poolType(PoolType_AVEPOOL) {
+        poolType(PoolType_AVEPOOL),
+        outputGrad(false) {
   }
 };
 
@@ -3289,6 +3368,9 @@ struct RoiParameters FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
   PoolType poolType() const {
     return static_cast<PoolType>(GetField<int8_t>(14, 1));
   }
+  bool outputGrad() const {
+    return GetField<uint8_t>(16, 0) != 0;
+  }
   bool Verify(flatbuffers::Verifier &verifier) const {
     return VerifyTableStart(verifier) &&
            VerifyField<int32_t>(verifier, 4) &&
@@ -3297,6 +3379,7 @@ struct RoiParameters FLATBUFFERS_FINAL_CLASS : private flatbuffers::Table {
            VerifyField<int32_t>(verifier, 10) &&
            VerifyField<uint8_t>(verifier, 12) &&
            VerifyField<int8_t>(verifier, 14) &&
+           VerifyField<uint8_t>(verifier, 16) &&
            verifier.EndTable();
   }
   RoiParametersT *UnPack(const flatbuffers::resolver_function_t *_resolver = nullptr) const;
@@ -3325,6 +3408,9 @@ struct RoiParametersBuilder {
   void add_poolType(PoolType poolType) {
     fbb_.AddElement<int8_t>(14, static_cast<int8_t>(poolType), 1);
   }
+  void add_outputGrad(bool outputGrad) {
+    fbb_.AddElement<uint8_t>(16, static_cast<uint8_t>(outputGrad), 0);
+  }
   explicit RoiParametersBuilder(flatbuffers::FlatBufferBuilder &_fbb)
         : fbb_(_fbb) {
     start_ = fbb_.StartTable();
@@ -3344,12 +3430,14 @@ inline flatbuffers::Offset<RoiParameters> CreateRoiParameters(
     float spatialScale = 0.0f,
     int32_t samplingRatio = -1,
     bool aligned = false,
-    PoolType poolType = PoolType_AVEPOOL) {
+    PoolType poolType = PoolType_AVEPOOL,
+    bool outputGrad = false) {
   RoiParametersBuilder builder_(_fbb);
   builder_.add_samplingRatio(samplingRatio);
   builder_.add_spatialScale(spatialScale);
   builder_.add_pooledHeight(pooledHeight);
   builder_.add_pooledWidth(pooledWidth);
+  builder_.add_outputGrad(outputGrad);
   builder_.add_poolType(poolType);
   builder_.add_aligned(aligned);
   return builder_.Finish();
@@ -4346,6 +4434,9 @@ inline void IDSTQuan::UnPackTo(IDSTQuanT *_o, const flatbuffers::resolver_functi
   { auto _e = aMin(); _o->aMin = _e; };
   { auto _e = readType(); _o->readType = _e; };
   { auto _e = has_scaleInt(); _o->has_scaleInt = _e; };
+  { auto _e = shapeInt32(); _o->shapeInt32 = _e; };
+  { auto _e = weightSize(); _o->weightSize = _e; };
+  { auto _e = index(); if (_e) { _o->index.resize(_e->size()); for (flatbuffers::uoffset_t _i = 0; _i < _e->size(); _i++) { _o->index[_i] = _e->Get(_i); } } };
 }
 
 inline flatbuffers::Offset<IDSTQuan> IDSTQuan::Pack(flatbuffers::FlatBufferBuilder &_fbb, const IDSTQuanT* _o, const flatbuffers::rehasher_function_t *_rehasher) {
@@ -4367,6 +4458,9 @@ inline flatbuffers::Offset<IDSTQuan> CreateIDSTQuan(flatbuffers::FlatBufferBuild
   auto _aMin = _o->aMin;
   auto _readType = _o->readType;
   auto _has_scaleInt = _o->has_scaleInt;
+  auto _shapeInt32 = _o->shapeInt32;
+  auto _weightSize = _o->weightSize;
+  auto _index = _o->index.size() ? _fbb.CreateVector(_o->index) : 0;
   return MNN::CreateIDSTQuan(
       _fbb,
       _buffer,
@@ -4379,7 +4473,10 @@ inline flatbuffers::Offset<IDSTQuan> CreateIDSTQuan(flatbuffers::FlatBufferBuild
       _aMax,
       _aMin,
       _readType,
-      _has_scaleInt);
+      _has_scaleInt,
+      _shapeInt32,
+      _weightSize,
+      _index);
 }
 
 inline QuantizedFloatParamT *QuantizedFloatParam::UnPack(const flatbuffers::resolver_function_t *_resolver) const {
@@ -4402,6 +4499,7 @@ inline void QuantizedFloatParam::UnPackTo(QuantizedFloatParamT *_o, const flatbu
   { auto _e = clampMin(); _o->clampMin = _e; };
   { auto _e = clampMax(); _o->clampMax = _e; };
   { auto _e = winogradAttr(); if (_e) { _o->winogradAttr.resize(_e->size()); for (flatbuffers::uoffset_t _i = 0; _i < _e->size(); _i++) { _o->winogradAttr[_i] = _e->Get(_i); } } };
+  { auto _e = outputDataType(); _o->outputDataType = _e; };
 }
 
 inline flatbuffers::Offset<QuantizedFloatParam> QuantizedFloatParam::Pack(flatbuffers::FlatBufferBuilder &_fbb, const QuantizedFloatParamT* _o, const flatbuffers::rehasher_function_t *_rehasher) {
@@ -4423,6 +4521,7 @@ inline flatbuffers::Offset<QuantizedFloatParam> CreateQuantizedFloatParam(flatbu
   auto _clampMin = _o->clampMin;
   auto _clampMax = _o->clampMax;
   auto _winogradAttr = _o->winogradAttr.size() ? _fbb.CreateVector(_o->winogradAttr) : 0;
+  auto _outputDataType = _o->outputDataType;
   return MNN::CreateQuantizedFloatParam(
       _fbb,
       _weight,
@@ -4435,7 +4534,8 @@ inline flatbuffers::Offset<QuantizedFloatParam> CreateQuantizedFloatParam(flatbu
       _outputZeroPoint,
       _clampMin,
       _clampMax,
-      _winogradAttr);
+      _winogradAttr,
+      _outputDataType);
 }
 
 inline Convolution2DT *Convolution2D::UnPack(const flatbuffers::resolver_function_t *_resolver) const {
@@ -4453,6 +4553,7 @@ inline void Convolution2D::UnPackTo(Convolution2DT *_o, const flatbuffers::resol
   { auto _e = quanParameter(); if (_e) _o->quanParameter = std::unique_ptr<IDSTQuanT>(_e->UnPack(_resolver)); };
   { auto _e = symmetricQuan(); if (_e) _o->symmetricQuan = std::unique_ptr<QuantizedFloatParamT>(_e->UnPack(_resolver)); };
   { auto _e = sparseParameter(); if (_e) _o->sparseParameter = std::unique_ptr<SparseCommonT>(_e->UnPack(_resolver)); };
+  { auto _e = external(); if (_e) { _o->external.resize(_e->size()); for (flatbuffers::uoffset_t _i = 0; _i < _e->size(); _i++) { _o->external[_i] = _e->Get(_i); } } };
 }
 
 inline flatbuffers::Offset<Convolution2D> Convolution2D::Pack(flatbuffers::FlatBufferBuilder &_fbb, const Convolution2DT* _o, const flatbuffers::rehasher_function_t *_rehasher) {
@@ -4469,6 +4570,7 @@ inline flatbuffers::Offset<Convolution2D> CreateConvolution2D(flatbuffers::FlatB
   auto _quanParameter = _o->quanParameter ? CreateIDSTQuan(_fbb, _o->quanParameter.get(), _rehasher) : 0;
   auto _symmetricQuan = _o->symmetricQuan ? CreateQuantizedFloatParam(_fbb, _o->symmetricQuan.get(), _rehasher) : 0;
   auto _sparseParameter = _o->sparseParameter ? CreateSparseCommon(_fbb, _o->sparseParameter.get(), _rehasher) : 0;
+  auto _external = _o->external.size() ? _fbb.CreateVector(_o->external) : 0;
   return MNN::CreateConvolution2D(
       _fbb,
       _common,
@@ -4476,7 +4578,8 @@ inline flatbuffers::Offset<Convolution2D> CreateConvolution2D(flatbuffers::FlatB
       _bias,
       _quanParameter,
       _symmetricQuan,
-      _sparseParameter);
+      _sparseParameter,
+      _external);
 }
 
 inline Convolution3DT *Convolution3D::UnPack(const flatbuffers::resolver_function_t *_resolver) const {
@@ -4491,6 +4594,7 @@ inline void Convolution3D::UnPackTo(Convolution3DT *_o, const flatbuffers::resol
   { auto _e = common(); if (_e) _o->common = std::unique_ptr<Convolution3DCommonT>(_e->UnPack(_resolver)); };
   { auto _e = weight(); if (_e) { _o->weight.resize(_e->size()); for (flatbuffers::uoffset_t _i = 0; _i < _e->size(); _i++) { _o->weight[_i] = _e->Get(_i); } } };
   { auto _e = bias(); if (_e) { _o->bias.resize(_e->size()); for (flatbuffers::uoffset_t _i = 0; _i < _e->size(); _i++) { _o->bias[_i] = _e->Get(_i); } } };
+  { auto _e = external(); if (_e) { _o->external.resize(_e->size()); for (flatbuffers::uoffset_t _i = 0; _i < _e->size(); _i++) { _o->external[_i] = _e->Get(_i); } } };
 }
 
 inline flatbuffers::Offset<Convolution3D> Convolution3D::Pack(flatbuffers::FlatBufferBuilder &_fbb, const Convolution3DT* _o, const flatbuffers::rehasher_function_t *_rehasher) {
@@ -4504,11 +4608,13 @@ inline flatbuffers::Offset<Convolution3D> CreateConvolution3D(flatbuffers::FlatB
   auto _common = _o->common ? CreateConvolution3DCommon(_fbb, _o->common.get(), _rehasher) : 0;
   auto _weight = _o->weight.size() ? _fbb.CreateVector(_o->weight) : 0;
   auto _bias = _o->bias.size() ? _fbb.CreateVector(_o->bias) : 0;
+  auto _external = _o->external.size() ? _fbb.CreateVector(_o->external) : 0;
   return MNN::CreateConvolution3D(
       _fbb,
       _common,
       _weight,
-      _bias);
+      _bias,
+      _external);
 }
 
 inline InnerProductT *InnerProduct::UnPack(const flatbuffers::resolver_function_t *_resolver) const {
@@ -5043,6 +5149,7 @@ inline void Scale::UnPackTo(ScaleT *_o, const flatbuffers::resolver_function_t *
   { auto _e = channels(); _o->channels = _e; };
   { auto _e = scaleData(); if (_e) { _o->scaleData.resize(_e->size()); for (flatbuffers::uoffset_t _i = 0; _i < _e->size(); _i++) { _o->scaleData[_i] = _e->Get(_i); } } };
   { auto _e = biasData(); if (_e) { _o->biasData.resize(_e->size()); for (flatbuffers::uoffset_t _i = 0; _i < _e->size(); _i++) { _o->biasData[_i] = _e->Get(_i); } } };
+  { auto _e = external(); if (_e) { _o->external.resize(_e->size()); for (flatbuffers::uoffset_t _i = 0; _i < _e->size(); _i++) { _o->external[_i] = _e->Get(_i); } } };
 }
 
 inline flatbuffers::Offset<Scale> Scale::Pack(flatbuffers::FlatBufferBuilder &_fbb, const ScaleT* _o, const flatbuffers::rehasher_function_t *_rehasher) {
@@ -5056,11 +5163,13 @@ inline flatbuffers::Offset<Scale> CreateScale(flatbuffers::FlatBufferBuilder &_f
   auto _channels = _o->channels;
   auto _scaleData = _o->scaleData.size() ? _fbb.CreateVector(_o->scaleData) : 0;
   auto _biasData = _o->biasData.size() ? _fbb.CreateVector(_o->biasData) : 0;
+  auto _external = _o->external.size() ? _fbb.CreateVector(_o->external) : 0;
   return MNN::CreateScale(
       _fbb,
       _channels,
       _scaleData,
-      _biasData);
+      _biasData,
+      _external);
 }
 
 inline EltwiseT *Eltwise::UnPack(const flatbuffers::resolver_function_t *_resolver) const {
@@ -5244,6 +5353,7 @@ inline void RoiParameters::UnPackTo(RoiParametersT *_o, const flatbuffers::resol
   { auto _e = samplingRatio(); _o->samplingRatio = _e; };
   { auto _e = aligned(); _o->aligned = _e; };
   { auto _e = poolType(); _o->poolType = _e; };
+  { auto _e = outputGrad(); _o->outputGrad = _e; };
 }
 
 inline flatbuffers::Offset<RoiParameters> RoiParameters::Pack(flatbuffers::FlatBufferBuilder &_fbb, const RoiParametersT* _o, const flatbuffers::rehasher_function_t *_rehasher) {
@@ -5260,6 +5370,7 @@ inline flatbuffers::Offset<RoiParameters> CreateRoiParameters(flatbuffers::FlatB
   auto _samplingRatio = _o->samplingRatio;
   auto _aligned = _o->aligned;
   auto _poolType = _o->poolType;
+  auto _outputGrad = _o->outputGrad;
   return MNN::CreateRoiParameters(
       _fbb,
       _pooledWidth,
@@ -5267,7 +5378,8 @@ inline flatbuffers::Offset<RoiParameters> CreateRoiParameters(flatbuffers::FlatB
       _spatialScale,
       _samplingRatio,
       _aligned,
-      _poolType);
+      _poolType,
+      _outputGrad);
 }
 
 inline ProposalT *Proposal::UnPack(const flatbuffers::resolver_function_t *_resolver) const {
@@ -5852,7 +5964,10 @@ inline const flatbuffers::TypeTable *IDSTQuanTypeTable() {
     { flatbuffers::ET_INT, 0, -1 },
     { flatbuffers::ET_INT, 0, -1 },
     { flatbuffers::ET_INT, 0, -1 },
-    { flatbuffers::ET_BOOL, 0, -1 }
+    { flatbuffers::ET_BOOL, 0, -1 },
+    { flatbuffers::ET_BOOL, 0, -1 },
+    { flatbuffers::ET_UINT, 0, -1 },
+    { flatbuffers::ET_UINT, 1, -1 }
   };
   static const char * const names[] = {
     "buffer",
@@ -5865,10 +5980,13 @@ inline const flatbuffers::TypeTable *IDSTQuanTypeTable() {
     "aMax",
     "aMin",
     "readType",
-    "has_scaleInt"
+    "has_scaleInt",
+    "shapeInt32",
+    "weightSize",
+    "index"
   };
   static const flatbuffers::TypeTable tt = {
-    flatbuffers::ST_TABLE, 11, type_codes, nullptr, nullptr, names
+    flatbuffers::ST_TABLE, 14, type_codes, nullptr, nullptr, names
   };
   return &tt;
 }
@@ -5885,10 +6003,12 @@ inline const flatbuffers::TypeTable *QuantizedFloatParamTypeTable() {
     { flatbuffers::ET_CHAR, 0, -1 },
     { flatbuffers::ET_CHAR, 0, -1 },
     { flatbuffers::ET_CHAR, 0, -1 },
-    { flatbuffers::ET_INT, 1, -1 }
+    { flatbuffers::ET_INT, 1, -1 },
+    { flatbuffers::ET_INT, 0, 1 }
   };
   static const flatbuffers::TypeFunction type_refs[] = {
-    QuantizeAlgoTypeTable
+    QuantizeAlgoTypeTable,
+    DataTypeTypeTable
   };
   static const char * const names[] = {
     "weight",
@@ -5901,10 +6021,11 @@ inline const flatbuffers::TypeTable *QuantizedFloatParamTypeTable() {
     "outputZeroPoint",
     "clampMin",
     "clampMax",
-    "winogradAttr"
+    "winogradAttr",
+    "outputDataType"
   };
   static const flatbuffers::TypeTable tt = {
-    flatbuffers::ST_TABLE, 11, type_codes, type_refs, nullptr, names
+    flatbuffers::ST_TABLE, 12, type_codes, type_refs, nullptr, names
   };
   return &tt;
 }
@@ -5916,7 +6037,8 @@ inline const flatbuffers::TypeTable *Convolution2DTypeTable() {
     { flatbuffers::ET_FLOAT, 1, -1 },
     { flatbuffers::ET_SEQUENCE, 0, 1 },
     { flatbuffers::ET_SEQUENCE, 0, 2 },
-    { flatbuffers::ET_SEQUENCE, 0, 3 }
+    { flatbuffers::ET_SEQUENCE, 0, 3 },
+    { flatbuffers::ET_LONG, 1, -1 }
   };
   static const flatbuffers::TypeFunction type_refs[] = {
     Convolution2DCommonTypeTable,
@@ -5930,10 +6052,11 @@ inline const flatbuffers::TypeTable *Convolution2DTypeTable() {
     "bias",
     "quanParameter",
     "symmetricQuan",
-    "sparseParameter"
+    "sparseParameter",
+    "external"
   };
   static const flatbuffers::TypeTable tt = {
-    flatbuffers::ST_TABLE, 6, type_codes, type_refs, nullptr, names
+    flatbuffers::ST_TABLE, 7, type_codes, type_refs, nullptr, names
   };
   return &tt;
 }
@@ -5942,7 +6065,8 @@ inline const flatbuffers::TypeTable *Convolution3DTypeTable() {
   static const flatbuffers::TypeCode type_codes[] = {
     { flatbuffers::ET_SEQUENCE, 0, 0 },
     { flatbuffers::ET_FLOAT, 1, -1 },
-    { flatbuffers::ET_FLOAT, 1, -1 }
+    { flatbuffers::ET_FLOAT, 1, -1 },
+    { flatbuffers::ET_LONG, 1, -1 }
   };
   static const flatbuffers::TypeFunction type_refs[] = {
     Convolution3DCommonTypeTable
@@ -5950,10 +6074,11 @@ inline const flatbuffers::TypeTable *Convolution3DTypeTable() {
   static const char * const names[] = {
     "common",
     "weight",
-    "bias"
+    "bias",
+    "external"
   };
   static const flatbuffers::TypeTable tt = {
-    flatbuffers::ST_TABLE, 3, type_codes, type_refs, nullptr, names
+    flatbuffers::ST_TABLE, 4, type_codes, type_refs, nullptr, names
   };
   return &tt;
 }
@@ -6271,15 +6396,17 @@ inline const flatbuffers::TypeTable *ScaleTypeTable() {
   static const flatbuffers::TypeCode type_codes[] = {
     { flatbuffers::ET_INT, 0, -1 },
     { flatbuffers::ET_FLOAT, 1, -1 },
-    { flatbuffers::ET_FLOAT, 1, -1 }
+    { flatbuffers::ET_FLOAT, 1, -1 },
+    { flatbuffers::ET_LONG, 1, -1 }
   };
   static const char * const names[] = {
     "channels",
     "scaleData",
-    "biasData"
+    "biasData",
+    "external"
   };
   static const flatbuffers::TypeTable tt = {
-    flatbuffers::ST_TABLE, 3, type_codes, nullptr, nullptr, names
+    flatbuffers::ST_TABLE, 4, type_codes, nullptr, nullptr, names
   };
   return &tt;
 }
@@ -6386,7 +6513,8 @@ inline const flatbuffers::TypeTable *RoiParametersTypeTable() {
     { flatbuffers::ET_FLOAT, 0, -1 },
     { flatbuffers::ET_INT, 0, -1 },
     { flatbuffers::ET_BOOL, 0, -1 },
-    { flatbuffers::ET_CHAR, 0, 0 }
+    { flatbuffers::ET_CHAR, 0, 0 },
+    { flatbuffers::ET_BOOL, 0, -1 }
   };
   static const flatbuffers::TypeFunction type_refs[] = {
     PoolTypeTypeTable
@@ -6397,10 +6525,11 @@ inline const flatbuffers::TypeTable *RoiParametersTypeTable() {
     "spatialScale",
     "samplingRatio",
     "aligned",
-    "poolType"
+    "poolType",
+    "outputGrad"
   };
   static const flatbuffers::TypeTable tt = {
-    flatbuffers::ST_TABLE, 6, type_codes, type_refs, nullptr, names
+    flatbuffers::ST_TABLE, 7, type_codes, type_refs, nullptr, names
   };
   return &tt;
 }
