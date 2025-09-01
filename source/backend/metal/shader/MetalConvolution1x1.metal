@@ -12,6 +12,7 @@ struct conv1x1_constants {
     int batch;
     int block_size;
     conv_activation_type activation;
+    float scale_coef;
 };
 
 kernel void conv1x1_g1z4(const device ftype4 *in            [[buffer(0)]],
@@ -56,7 +57,7 @@ kernel void conv1x1_g1z4_w8(const device ftype4 *in            [[buffer(0)]],
                             constant conv1x1_constants& cst    [[buffer(2)]],
                             const device MNN::char4x4 *wt      [[buffer(3)]],
                             const device ftype4 *biasTerms     [[buffer(4)]],
-                            const device float4 *dequantScale  [[buffer(5)]],
+                            const device ftype4 *dequantScale  [[buffer(5)]],
                             uint3 gid                          [[thread_position_in_grid]]) {
     if ((int)gid.x * CONV_UNROLL >= cst.output_size || (int)gid.y >= cst.output_slice || (int)gid.z >= cst.batch) return;
 
@@ -70,17 +71,17 @@ kernel void conv1x1_g1z4_w8(const device ftype4 *in            [[buffer(0)]],
     int computeSize = min(cst.output_size - rx, CONV_UNROLL);
     int block = (cst.input_slice + cst.block_size - 1) / cst.block_size;
     for (int bi=0; bi<cst.block_size; ++bi) {
-        FLOAT4 bs0 = FLOAT4(dequantScale[2 * (uz * cst.block_size + bi) + 0]);
-        FLOAT4 bs1 = FLOAT4(dequantScale[2 * (uz * cst.block_size + bi) + 1]);
+        FLOAT4 bs0 = FLOAT4(dequantScale[2 * (uz * cst.block_size + bi) + 0]) / (FLOAT)cst.scale_coef;
+        FLOAT4 bs1 = FLOAT4(dequantScale[2 * (uz * cst.block_size + bi) + 1]) / (FLOAT)cst.scale_coef;
         FLOAT4 scale = bs0;
         FLOAT4 dequant_bias = bs1;
         int zmin = bi * block;
         int zmax = min(zmin + block, cst.input_slice);
         for (int z = zmin; z < zmax; z++) {
             auto in40 = (FLOAT4)*xy_in0;
-            auto in41 = (FLOAT4)*(xy_in0 + 1);
-            auto in42 = (FLOAT4)*(xy_in0 + 2);
-            auto in43 = (FLOAT4)*(xy_in0 + 3);
+            auto in41 = computeSize > 1 ? (FLOAT4)*(xy_in0 + 1) : (FLOAT4)0.0;
+            auto in42 = computeSize > 2 ? (FLOAT4)*(xy_in0 + 2) : (FLOAT4)0.0;
+            auto in43 = computeSize > 3 ? (FLOAT4)*(xy_in0 + 3) : (FLOAT4)0.0;
             auto w = xy_wt[z];
             FLOAT4x4 w_fp32 = FLOAT4x4(FLOAT4(w[0]), FLOAT4(w[1]), FLOAT4(w[2]), FLOAT4(w[3]));
             FLOAT4x4 w_dequant;
@@ -101,12 +102,13 @@ kernel void conv1x1_g1z4_w8(const device ftype4 *in            [[buffer(0)]],
     if (computeSize > 3) {xy_out[3] = activate(ftype4(result3), cst.activation); }
 }
 
+
 kernel void conv1x1_g1z4_w4(const device ftype4 *in            [[buffer(0)]],
                             device ftype4 *out                 [[buffer(1)]],
                             constant conv1x1_constants& cst    [[buffer(2)]],
                             const device MNN::uchar4x2 *wt      [[buffer(3)]],
                             const device ftype4 *biasTerms     [[buffer(4)]],
-                            const device float4 *dequantScale  [[buffer(5)]],
+                            const device ftype4 *dequantScale  [[buffer(5)]],
                             uint3 gid                          [[thread_position_in_grid]]) {
     if ((int)gid.x * CONV_UNROLL >= cst.output_size || (int)gid.y >= cst.output_slice || (int)gid.z >= cst.batch) return;
 
@@ -120,8 +122,8 @@ kernel void conv1x1_g1z4_w4(const device ftype4 *in            [[buffer(0)]],
     int computeSize = min(cst.output_size - rx, CONV_UNROLL);
     int block = (cst.input_slice + cst.block_size - 1) / cst.block_size;
     for (int bi=0; bi<cst.block_size; ++bi) {
-        FLOAT4 scale = FLOAT4(dequantScale[2 * (uz * cst.block_size + bi) + 0]);
-        FLOAT4 dequant_bias = FLOAT4(dequantScale[2 * (uz * cst.block_size + bi) + 1]);
+        FLOAT4 scale = FLOAT4(dequantScale[2 * (uz * cst.block_size + bi) + 0]) / (FLOAT)cst.scale_coef;
+        FLOAT4 dequant_bias = FLOAT4(dequantScale[2 * (uz * cst.block_size + bi) + 1]) / (FLOAT)cst.scale_coef;
         int zmin = bi * block;
         int zmax = min(zmin + block, cst.input_slice);
         for (int z = zmin; z < zmax; z++) {
@@ -154,17 +156,6 @@ kernel void conv1x1_g1z4_w4(const device ftype4 *in            [[buffer(0)]],
     if (computeSize > 1) {xy_out[1] = activate(ftype4(result1), cst.activation); }
     if (computeSize > 2) {xy_out[2] = activate(ftype4(result2), cst.activation); }
     if (computeSize > 3) {xy_out[3] = activate(ftype4(result3), cst.activation); }
-
-    // MNN::uchar4x2 w = xy_wt[0];
-    // xy_out[0] = ftype4(w[0][0], w[0][1], w[0][0], w[0][1]);
-    // xy_out[0] = ftype4((float)(w[0][0]>>4)-8, (float)(w[0][0] >> 4), (float)(w[0][0] & 15) - 8, (float)(w[0][0] & 15));
-    
-    
-    /* true */ 
-    //xy_out[0] = activate(ftype4(result0), cst.activation);
-    //if (computeSize > 1) {xy_out[1] = activate(ftype4(result1), cst.activation); }
-    //if (computeSize > 2) {xy_out[2] = activate(ftype4(result2), cst.activation); }
-    //if (computeSize > 3) {xy_out[3] = activate(ftype4(result3), cst.activation); }
 }
 
 kernel void conv1x1_g1z8(const device ftype4 *in            [[buffer(0)]],

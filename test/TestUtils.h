@@ -102,10 +102,13 @@ float convertFP32ToFP16(float fp32Value);
 inline float keepFP32Precision(float fp32Value) {
     return fp32Value;
 }
+MNNForwardType getCurrentType();
+
+std::shared_ptr<MNN::Express::Executor> cloneCurrentExecutor();
 
 using ConvertFP32 = float(*)(float fp32Value);
 
-const static ConvertFP32 FP32Converter[MNN::BackendConfig::Precision_Low + 2] = {
+const static std::vector<ConvertFP32> FP32Converter = {
     keepFP32Precision,
     keepFP32Precision,
 #ifdef MNN_SUPPORT_BF16

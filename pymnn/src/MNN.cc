@@ -20,7 +20,14 @@ static int tls_key_2 = 0;
 #include <MNN/expr/Module.hpp>
 using namespace MNN::Express;
 #ifdef PYMNN_OPENCV_API
+#ifdef BUILD_FOR_IOS
+#include "MNN/cv/cv.hpp"
+#else
 #include "cv/cv.hpp"
+#endif
+#endif
+#ifdef PYMNN_AUDIO_API
+#include "audio/audio.hpp"
 #endif
 #endif // PYMNN_EXPR_API
 
@@ -63,6 +70,9 @@ using RegularizationMethod = ParameterOptimizer::RegularizationMethod;
 #endif
 #ifdef PYMNN_OPENCV_API
 #include "cv.h"
+#endif
+#ifdef PYMNN_AUDIO_API
+#include "audio.h"
 #endif
 #endif
 
@@ -814,15 +824,37 @@ static PyObject* PyMNNInterpreter_setSessionMode(PyMNNInterpreter *self, PyObjec
 }
 static PyObject* PyMNNInterpreter_setSessionHint(PyMNNInterpreter *self, PyObject *args) {
     int type_val = 0;
-    int num_val = 0;
-    if (!PyArg_ParseTuple(args, "ii", &type_val, &num_val)) {
+    PyObject* num_val = nullptr;
+    if (!PyArg_ParseTuple(args, "iO", &type_val, &num_val)) {
         PyErr_SetString(PyExc_Exception,
-                        "PyMNNInterpreter_setSessionHint: Not interger input and interger input");
-        return NULL;
+                        "PyMNNInterpreter_setSessionHint: Not interger input and interger/list/tuple input");
+        return nullptr;
     }
 
     auto type = (MNN::Interpreter::HintMode)type_val;
-    self->interpreter->setSessionHint(type, num_val);
+    if (PyList_Check(num_val)) {
+        size_t size = PyList_Size(num_val);
+        int* list = new int[size];
+        for (int i = 0; i < size; i++) {
+            list[i] = static_cast<int>(PyLong_AsLong(PyList_GetItem(num_val, i)));
+        }
+        self->interpreter->setSessionHint(type, list, size);
+        delete[] list;
+    } else if (PyTuple_Check(num_val)) {
+        size_t size = PyTuple_Size(num_val);
+        int* list = new int[size];
+        for (int i = 0; i < size; i++) {
+            list[i] = static_cast<int>(PyLong_AsLong(PyTuple_GetItem(num_val, i)));
+        }
+        self->interpreter->setSessionHint(type, list, size);
+        delete[] list;
+    } else if (PyLong_Check(num_val)) {
+        self->interpreter->setSessionHint(type, static_cast<int>(PyLong_AsLong(num_val)));
+    } else {
+        PyErr_SetString(PyExc_Exception,
+                        "PyMNNInterpreter_setSessionHint: num_val must be a list, tuple or int");
+        return nullptr;
+    }
     Py_RETURN_NONE;
 }
 static PyObject* PyMNNInterpreter_runSession(PyMNNInterpreter *self, PyObject *args) {
@@ -1587,10 +1619,11 @@ static PyObject* PyMNNTensor_repr(PyObject *self) {
 #ifdef PYMNN_NUMPY_USABLE
     auto content = PyMNNTensor_getNumpyData(((PyMNNTensor*)self), NULL);
 #else
-    auto content = PyMNNVar_read_as_tuple((PyMNNVar*)self, NULL);
+    // print shape of tensor
+    auto content = PyMNNTensor_getShape((PyMNNTensor*)self, NULL);
 #endif
     auto reprfunc = PyObject_GetAttrString(content, "__repr__");
-    auto str = PyEval_CallObject(reprfunc, NULL);
+    auto str = PyObject_CallObject(reprfunc, NULL);
     Py_DECREF(content);
     Py_DECREF(reprfunc);
     return str;
@@ -2711,6 +2744,15 @@ PyMODINIT_FUNC MOD_INIT_FUNC(void) {
     constexpr int cv_method_num = sizeof(PyMNNCV_methods) / sizeof(PyMethodDef);
     for (int i = 0; i < cv_method_num; i++) {
         def_method(cv_module, &PyMNNCV_methods[i]);
+    }
+#endif
+#ifdef PYMNN_AUDIO_API
+    // audio submodule
+    auto audio_module = def_submodule(m, "audio");
+    // add methods of audio
+    constexpr int audio_method_num = sizeof(PyMNNAUDIO_methods) / sizeof(PyMethodDef);
+    for (int i = 0; i < audio_method_num; i++) {
+        def_method(audio_module, &PyMNNAUDIO_methods[i]);
     }
 #endif
 #endif

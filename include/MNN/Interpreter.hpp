@@ -216,7 +216,9 @@ public:
         // Geometry Compute option, default is 0xFFFF
         GEOMETRY_COMPUTE_MASK = 4,
 
-        // 0: Close dynamic quant; 1: per batch quant; 2: per tensor quant
+        // default 0
+        // 1: For general convolution, use one scale&zeropoint to quant.
+        // 2: use block-quant for input data.
         DYNAMIC_QUANT_OPTIONS = 5,
 
         // For Mobile CPU with big-litter core, set decrease rate to let MNN divide task differential by CPU's performance
@@ -224,20 +226,50 @@ public:
         // Default is 50
         CPU_LITTLECORE_DECREASE_RATE = 6,
 
-        // 0: Do not quantize kvcache, just store float
-        // 1: Only quantize key cache, use int8 asymmetric quantization 
-        // 2: Only quantize value cache, use fp8 quantization
-        // 3: quantize both key and value cache as described above
-        KVCACHE_QUANT_OPTIONS = 7,
+        // 0: Do not quantize
+        // 1: Only quantize key, use int8 asymmetric quantization 
+        // 2: Only quantize value, use fp8 quantization
+        // 3: quantize both key and value
+        // 4: quantize query, key and value, and use gemm int8 kernel to compute K*V
+        QKV_QUANT_OPTIONS = 7,
 
         // size limit of kvcache in memory (for a single layer)
         // if the size of kvcache exceeds the limit, it will be moved to disk
         KVCACHE_SIZE_LIMIT = 8,
+        // Op encoder number for commit
+        OP_ENCODER_NUMBER_FOR_COMMIT = 9,
+
+        // KVCache Info
+        KVCACHE_INFO = 10,
+        // mmap allocate file size, KB
+        MMAP_FILE_SIZE = 11,
+        USE_CACHED_MMAP = 12,
+        
+        // Multi-Thread Load module, default is 0 (don't use other Thread)
+        INIT_THREAD_NUMBER = 13,
+
+        // Used CPU ids
+        CPU_CORE_IDS = 14,
+
+        // set CPU threads to use when supports Arm sme2
+        CPU_SME2_INSTRUCTIONS = 15,
+
+        // Enable KleidiAI
+        CPU_ENABLE_KLEIDIAI = 16
     };
 
     enum ExternalPathType {
         // Path of the kvcache directory
         EXTERNAL_PATH_KVCACHE_DIR = 0,
+        
+        // Mid Buffer Cache File
+        EXTERNAL_FEATUREMAP_DIR = 1,
+
+        // Weight Buffer Cache File
+        EXTERNAL_WEIGHT_DIR = 2,
+
+        // Path of the NPU Model directory
+        EXTERNAL_NPU_FILE_DIR = 3,
 
         // Other types ...
     };
@@ -261,10 +293,12 @@ public:
 
     /**
      * @brief The API shoud be called before create session.
-     * @param mode      Hint type
+     * @param hint      Hint type
      * @param value     Hint value
+     * @param size      Hint value size(when use a ptr)
      */
-    void setSessionHint(HintMode mode, int value);
+    void setSessionHint(HintMode hint, int value);
+    void setSessionHint(HintMode hint, int* value, size_t size);
 public:
     /**
      * @brief create runtimeInfo separately with schedule config.
@@ -408,7 +442,10 @@ public:
         /** Backends in session in M, int*, length >= 1 + number of configs when create session */
         BACKENDS = 2,
 
-        /** Resize Info, int*, 0: ready to execute, 1: need malloc, 2: need resize */
+        /** Resize Info, int* , the mean different from API
+         Interpreter::getSessionInfo: 0: ready to execute, 1: need malloc, 2: need resize
+         RuntimeManager::getInfo: 0: no resize, 1: re-malloc, 2: resize
+         */
         RESIZE_STATUS = 3,
         
         /** Mode / NumberThread, int* */

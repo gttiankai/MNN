@@ -234,7 +234,10 @@ ConvertMatMulToConv2D::ConvertMatMulToConv2D() {
                 dense->symmetricQuan->nbits = 8;
                 std::vector<float> scale_1(num_output, 1.0);
                 if (expr->inputs().size() == 3 && expr->inputs()[2]->getInfo()) {
-                    MNN_ASSERT(expr->inputs()[2]->getInfo()->dim[0] == num_output);
+                    if (expr->inputs()[2]->getInfo() && expr->inputs()[2]->getInfo()->dim.size() > 0 && expr->inputs()[2]->getInfo()->dim[0] != num_output) {
+                        MNN_ERROR("!!! Error: Do not support this!\n");
+                        return false;
+                    }
                     if (!helpers::IsConstant(expr->inputs()[2]->expr().first) || !expr->inputs()[2]->readMap<float>()) {
                         MNN_ERROR("matmul convert to conv2d fail: In dynamic quant for Matmul, weight scale must be constant.");
                         return false;
@@ -418,7 +421,7 @@ ConvertMatMulToConv2D::ConvertMatMulToConv2D() {
                         matmul_expr = matmul_var->expr().first;
                     }
                 }
-                if (matmul_expr->inputs().size() != 8 && matmul_expr->inputs().size() != 9) { // matmul 8 input: (x,y,x_scale,x_zero,y_scale,y_zero,out_scale,out_zero,bias
+                if (matmul_expr->inputs().size() != 8 && matmul_expr->inputs().size() != 9) { // matmul 8 input: for MatMulInteger (x,y,x_scale,x_zero,y_scale,y_zero,out_scale,out_zero,bias
                     return false;
                 }
                 if (matmul_var->linkNumber() > 1) {

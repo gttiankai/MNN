@@ -17,12 +17,23 @@
 //#define MNN_OPEN_TIME_TRACE
 #include <MNN/AutoTime.hpp>
 #include "CLCache_generated.h"
-#include "backend/opencl/execution/cl/opencl_source_map.hpp" 
+#include "backend/opencl/execution/cl/opencl_source_map.hpp"
+//#define ARM_OPENCL_PRINTF_DEBUG
 using namespace CLCache;
 namespace MNN {
 
 extern const std::map<std::string, const char*> OpenCLProgramMap;
-extern std::mutex gCLMutex;
+static std::mutex gCLMutex;
+static std::weak_ptr<::cl::Context> globalContext;
+static std::mutex gCLContextMutex;
+static std::shared_ptr<::cl::Context> getGlobalContext(){
+    return globalContext.lock();
+        }
+
+static void setGlobalContext(std::shared_ptr<cl::Context> Context){
+    std::lock_guard<std::mutex> lck(gCLContextMutex);
+    globalContext = Context;
+}
 
 bool OpenCLRuntime::getDeviceSupportsExtension(const cl::Device &device, const char *extensionName) {
     std::string extensions = device.getInfo<CL_DEVICE_EXTENSIONS>();
@@ -30,11 +41,23 @@ bool OpenCLRuntime::getDeviceSupportsExtension(const cl::Device &device, const c
     return (pos != std::string::npos);
 }
 
-OpenCLRuntime::OpenCLRuntime(const BackendConfig::PrecisionMode precision, const int cl_mode, int platformSize, int platformId, int deviceId, void *contextPtr, void *glShared) {
+#ifdef ARM_OPENCL_PRINTF_DEBUG
+static void callback(const char *buffer, size_t length, size_t final, void *user_data)
+{
+    fwrite(buffer, 1, length, stdout);
+}
+#endif
+
+OpenCLRuntime::OpenCLRuntime(int platformSize, int platformId, int deviceId, void *contextPtr, const RuntimeHint& hint) {
 #ifdef LOG_VERBOSE
     MNN_PRINT("start OpenCLRuntime !\n");
 #endif
-    mDefaultBuildParams = " -cl-mad-enable";
+    // set init info
+    mInitInfo.platformSize = platformSize;
+    mInitInfo.platformId = platformId;
+    mInitInfo.deviceId = deviceId;
+    mInitInfo.contextPtr = contextPtr;
+    mDefaultBuildParams = " -cl-mad-enable -w";
     std::vector<cl::Platform> platforms;
     cl_int res = cl::Platform::get(&platforms, platformSize);
     MNN_CHECK_CL_SUCCESS(res, "getPlatform");
@@ -58,25 +81,25 @@ OpenCLRuntime::OpenCLRuntime(const BackendConfig::PrecisionMode precision, const
             const std::string deviceName    = mFirstGPUDevicePtr->getInfo<CL_DEVICE_NAME>();
             mDeviceName = deviceName;
             const std::string deviceVersion = mFirstGPUDevicePtr->getInfo<CL_DEVICE_VERSION>();
-            std::map<std::string, MNN::MaliAr> maliArMap {
-                {"Mali-T860", MIDGARD},
-                {"Mali-T880", MIDGARD},
-                {"Mali-G31", BIFROST},
-                {"Mali-G51", BIFROST},
-                {"Mali-G52", BIFROST},
-                {"Mali-G71", BIFROST},
-                {"Mali-G72", BIFROST},
-                {"Mali-G76", BIFROST},
-                {"Mali-G57", VALHALL},
-                {"Mali-G68", VALHALL},
-                {"Mali-G77", VALHALL},
-                {"Mali-G78", VALHALL},
-                {"Mali-G310", VALHALL},
-                {"Mali-G510", VALHALL},
-                {"Mali-G610", VALHALL},
-                {"Mali-G615", VALHALL},
-                {"Mali-G710", VALHALL},
-                {"Mali-G715", VALHALL},
+            std::map<std::string, std::pair<MNN::MaliAr, MNN::GpuLevel>> maliArMap {
+                {"Mali-T860", {MIDGARD, LOW}},
+                {"Mali-T880", {MIDGARD, LOW}},
+                {"Mali-G31", {BIFROST, LOW}},
+                {"Mali-G51", {BIFROST, LOW}},
+                {"Mali-G52", {BIFROST, LOW}},
+                {"Mali-G71", {BIFROST, LOW}},
+                {"Mali-G72", {BIFROST, LOW}},
+                {"Mali-G76", {BIFROST, MEDIUM}},
+                {"Mali-G57", {VALHALL, LOW}},
+                {"Mali-G68", {VALHALL, LOW}},
+                {"Mali-G77", {VALHALL, MEDIUM}},
+                {"Mali-G78", {VALHALL, MEDIUM}},
+                {"Mali-G310", {VALHALL, LOW}},
+                {"Mali-G510", {VALHALL, LOW}},
+                {"Mali-G610", {VALHALL, LOW}},
+                {"Mali-G615", {VALHALL, LOW}},
+                {"Mali-G710", {VALHALL, TOP}},
+                {"Mali-G715", {VALHALL, TOP}},
             };
         
             const std::string deviceVendor  = mFirstGPUDevicePtr->getInfo<CL_DEVICE_VENDOR>();
@@ -85,7 +108,6 @@ OpenCLRuntime::OpenCLRuntime(const BackendConfig::PrecisionMode precision, const
         #ifdef ENABLE_OPENCL_TIME_PROFILER
             properties |= CL_QUEUE_PROFILING_ENABLE;
         #endif
-            cl_int res;
             // if device is QUALCOMM's and version is 2.0 , set spacial optimized param
 
             sscanf(deviceVersion.c_str(), "%*s%f%*s", &mCLVersion);
@@ -111,30 +133,40 @@ OpenCLRuntime::OpenCLRuntime(const BackendConfig::PrecisionMode precision, const
             }
         #endif
             
-            if (deviceName.find("QUALCOMM Adreno") != std::string::npos) {
+            if (deviceName.find("QUALCOMM Adreno") != std::string::npos || deviceName.find("Qualcomm") != std::string::npos) {
                 mGpuType = ADRENO;
                 
                 // if device is QUALCOMM's and version is 2.0 , set spacial optimized param
                 //if Adreno version is less than Adreno512, donot set WorkGroupAttribute option
                 std::string adrenoVersion = deviceVersion.substr(deviceVersion.size()-3);
-                //printf("Adreno Version:%s\n", adrenoVersion.c_str());
+                // MNN_PRINT("Adreno Version:%s   %s\n", deviceVersion.c_str(), adrenoVersion.c_str());
                 if(mCLVersion > 1.99f && adrenoVersion >= "512") {
                     isSetWorkGroupAttribute = true;
                 }
+                // 8Gen1 and after
+                if(adrenoVersion >= "730") {
+                    mGpuLevel = TOP;
+                }
+                mDeviceInfo = deviceVersion.size() <= 14 ? deviceVersion : deviceVersion.substr(deviceVersion.size()-14);
             } else if (deviceName.find("Mali") != std::string::npos) {
                 mGpuType = MALI;
                 if(maliArMap.find(deviceName) != maliArMap.end()){
-                    mMaliAr = maliArMap[deviceName];
+                    mMaliAr = maliArMap[deviceName].first;
+                    mGpuLevel = maliArMap[deviceName].second;
                 }else{
                     mMaliAr = VALHALL;
+                    mGpuLevel = UNDEFINED;
                 }
+                mDeviceInfo = deviceName;
             } else if (deviceVendor.find("Advanced Micro Devices") != std::string::npos) {
                 // Radeon series GPU is main product of Advanced Micro Devices (AMD)
                 mGpuType = RADEON;
                 isSetWorkGroupAttribute = true;
-            } 
+                mDeviceInfo = deviceVendor;
+            }
             else if (deviceVendor.find("Intel") != std::string::npos) {
                 mGpuType = INTEL;
+                mDeviceInfo = deviceVendor;
 #ifdef MNN_SUPPORT_INTEL_SUBGROUP
                 const std::string extensions = mFirstGPUDevicePtr->getInfo<CL_DEVICE_EXTENSIONS>();
                 if (extensions.find("cl_intel_subgroups") != std::string::npos) {
@@ -148,54 +180,55 @@ OpenCLRuntime::OpenCLRuntime(const BackendConfig::PrecisionMode precision, const
             }
             else {
                 mGpuType = OTHER;
+                mDeviceInfo = deviceName;
             }
             const std::string extensions = platforms[0].getInfo<CL_PLATFORM_EXTENSIONS>();
             bool isPriorityHint = (extensions.find("cl_khr_priority_hints") != std::string::npos);
-
+            std::vector<cl_context_properties> context_properties;
+            if(mGpuType == ADRENO && !isPriorityHint){
+                context_properties.push_back(CL_CONTEXT_PERF_HINT_QCOM);
+                context_properties.push_back(CL_PERF_HINT_HIGH_QCOM);
+                context_properties.push_back(CL_CONTEXT_PRIORITY_HINT_QCOM);
+                context_properties.push_back(CL_PRIORITY_HINT_LOW_QCOM);
+                mIsDeviceSupportedLowPower = true;
+            }
+            #ifdef ARM_OPENCL_PRINTF_DEBUG
+            context_properties.push_back(CL_PRINTF_CALLBACK_ARM);
+            context_properties.push_back((cl_context_properties)callback);
+            context_properties.push_back(CL_PRINTF_BUFFERSIZE_ARM);
+            context_properties.push_back(0x1000);
+            #endif
+            std::string deviceextensions = mFirstGPUDevicePtr.get()->getInfo<CL_DEVICE_EXTENSIONS>();
+#ifdef MNN_USE_LIB_WRAPPER
+            mIsSupportAHD = (getDeviceSupportsExtension(*(mFirstGPUDevicePtr.get()), "cl_arm_import_memory_android_hardware_buffer")
+                 && mGpuType == MALI && OpenCLSymbolsOperator::getOpenclSymbolsPtr()->getFuncAddress(platforms[platformId](), "clImportMemoryARM"))
+                 || (mGpuType == ADRENO && getDeviceSupportsExtension(*(mFirstGPUDevicePtr.get()), "cl_qcom_android_ahardwarebuffer_host_ptr"));
+#endif
             if(nullptr != contextPtr){
-                if(nullptr != glShared && getDeviceSupportsExtension(*(mFirstGPUDevicePtr.get()), "cl_khr_gl_sharing")){
-                    std::vector<cl_context_properties> context_properties;
-                    context_properties.reserve(7);
-                    context_properties.push_back(CL_GL_CONTEXT_KHR);
-                    context_properties.push_back((cl_context_properties)contextPtr);
-                    context_properties.push_back(CL_EGL_DISPLAY_KHR);
-                    context_properties.push_back((cl_context_properties)glShared);
-                    context_properties.push_back(CL_CONTEXT_PLATFORM);
-                    context_properties.push_back((cl_context_properties)platforms[platformId]());
-                    context_properties.push_back(0);
-                    mContext = std::shared_ptr<cl::Context>(new cl::Context(std::vector<cl::Device>({*mFirstGPUDevicePtr}), context_properties.data(), nullptr, nullptr, &res));
-                }
-                else{
-                    mContext = std::shared_ptr<cl::Context>((cl::Context*)contextPtr, [](void* ptr) {
-                        // Do nothing
-                    });
-                }
+                mContext = std::shared_ptr<cl::Context>((cl::Context*)contextPtr, [](void* ptr) {
+                    // Do nothing
+                });
             }else{
-                if(mGpuType == ADRENO && !isPriorityHint){
-                    std::vector<cl_context_properties> context_properties;
-                    context_properties.reserve(5);
-                    context_properties.push_back(CL_CONTEXT_PERF_HINT_QCOM);
-                    context_properties.push_back(CL_PERF_HINT_HIGH_QCOM);
-                    context_properties.push_back(CL_CONTEXT_PRIORITY_HINT_QCOM);
-                    context_properties.push_back(CL_PRIORITY_HINT_LOW_QCOM);
-                    context_properties.push_back(0);
-                    mContext = std::shared_ptr<cl::Context>(new cl::Context(std::vector<cl::Device>({*mFirstGPUDevicePtr}), context_properties.data(), nullptr, nullptr, &res));
-                    mIsDeviceSupportedLowPower = true;
-                }else{
-                    mContext = std::shared_ptr<cl::Context>(new cl::Context(std::vector<cl::Device>({*mFirstGPUDevicePtr}), nullptr, nullptr, nullptr, &res));
+                mContext = getGlobalContext();
+                if(mContext == nullptr){
+                    if(context_properties.size() > 0){
+                        context_properties.push_back(0);
+                        mContext = std::shared_ptr<cl::Context>(new cl::Context(std::vector<cl::Device>({*mFirstGPUDevicePtr}), context_properties.data(), nullptr, nullptr, &res));
+                    }else{
+                        mContext = std::shared_ptr<cl::Context>(new cl::Context(std::vector<cl::Device>({*mFirstGPUDevicePtr}), nullptr, nullptr, nullptr, &res));
+                    }
+                    setGlobalContext(mContext);
                 }
-                
-                MNN_CHECK_CL_SUCCESS(res, "context");
-                if (res != CL_SUCCESS) {
-                    mIsCreateError = true;
-                    return;
-                }
+            }
+            MNN_CHECK_CL_SUCCESS(res, "context");
+            if (res != CL_SUCCESS) {
+                mIsCreateError = true;
+                return;
             }
             
             mIsDeviceSupportedLowPower = (mIsDeviceSupportedLowPower || isPriorityHint);
             
             #ifdef MNN_USE_LIB_WRAPPER
-            mIsSupportGL = !OpenCLSymbolsOperator::getOpenclSymbolsPtr()->isGlError();
             if(isPriorityHint)
             {
                 if(true == OpenCLSymbolsOperator::getOpenclSymbolsPtr()->isPropError())
@@ -233,34 +266,16 @@ OpenCLRuntime::OpenCLRuntime(const BackendConfig::PrecisionMode precision, const
             mFirstGPUDevicePtr->getInfo(CL_DEVICE_MAX_MEM_ALLOC_SIZE, &mMaxMemAllocSize);
             mFirstGPUDevicePtr->getInfo(CL_DEVICE_LOCAL_MEM_SIZE, &mMaxLocalMemSize);
             mMaxWorkGroupSize = mFirstGPUDevicePtr->getInfo<CL_DEVICE_MAX_WORK_GROUP_SIZE>();
-            cl_device_fp_config fpConfig;
-            auto success = mFirstGPUDevicePtr->getInfo(CL_DEVICE_HALF_FP_CONFIG, &fpConfig);
-            mIsDeviceSupportedFP16     = CL_SUCCESS == success && fpConfig > 0;
-            bool checkFp16Exetension = getDeviceSupportsExtension(*(mFirstGPUDevicePtr.get()), "cl_khr_fp16");
-            mIsDeviceSupportedFP16 = (mIsDeviceSupportedFP16 && checkFp16Exetension);
-            
-            //set gpu mode, tuning level and memory object
-            setGpuMode(cl_mode);
-            
-            if(mMemType == AUTO) {
-                if(mGpuType == MALI || mGpuType == INTEL) {
-                    mMemType = BUFFER;
-                } else {
-                    mMemType = IMAGE;
-                }
-            }
-            mPrecisionLevel = 1;
-            if (mIsDeviceSupportedFP16) {
-                if (precision == BackendConfig::Precision_Low) {
-                    mPrecisionLevel = 2;
-                } else if (precision == BackendConfig::Precision_Normal && mMemType == BUFFER) {
-                    mPrecisionLevel = 0;
-                }
-            }
-            
-            // Is supported fp16 IO storage
-            mIsSupportedFP16 = (mPrecisionLevel == 2 || mPrecisionLevel == 0);
 
+
+            {
+                cl_device_fp_config fpConfig;
+                auto success = mFirstGPUDevicePtr->getInfo(CL_DEVICE_HALF_FP_CONFIG, &fpConfig);
+                mIsSupportedFP16 = CL_SUCCESS == success && fpConfig > 0;
+                bool checkFp16Exetension = getDeviceSupportsExtension(*(mFirstGPUDevicePtr.get()), "cl_khr_fp16");
+                mIsSupportedFP16 = (mIsSupportedFP16 && checkFp16Exetension);
+            }
+            
             if(getDeviceSupportsExtension(*(mFirstGPUDevicePtr.get()), "cl_arm_integer_dot_product_int8")){
                 mSupportDotInt8 = true;
             }
@@ -271,15 +286,13 @@ OpenCLRuntime::OpenCLRuntime(const BackendConfig::PrecisionMode precision, const
 #if !defined(ENABLE_OPENCL_TIME_PROFILER) && defined(MNN_USE_LIB_WRAPPER)
             {
                 if((false == OpenCLSymbolsOperator::getOpenclSymbolsPtr()->isQcomError()) 
-                   && getDeviceSupportsExtension(*(mFirstGPUDevicePtr.get()), "cl_qcom_recordable_queues")
-                   && (cl_mode & MNN_GPU_RECORD_OP || cl_mode & MNN_GPU_RECORD_BATCH)){
+                   && getDeviceSupportsExtension(*(mFirstGPUDevicePtr.get()), "cl_qcom_recordable_queues")){
+                    mSupportRecordQueue = true;
                     uint32_t MaxRecordableQueueSize = mFirstGPUDevicePtr->getInfo<CL_DEVICE_RECORDABLE_QUEUE_MAX_SIZE>();
                     cl_int err;
                     if(MaxRecordableQueueSize > 0){
-                        // TODO: Use setSessionHint to set the number of mUseRecordableQueueSize
-                        mUseRecordableQueueSize = MaxRecordableQueueSize;
+                        mUseRecordableQueueSize = hint.encorderNumForCommit;
                         mUseRecordableQueueSize = MaxRecordableQueueSize < mUseRecordableQueueSize ? MaxRecordableQueueSize : mUseRecordableQueueSize;
-                        mUseRecordQueue = true;
                         mRecordableQueuePtr = std::make_shared<cl::CommandQueue>(*mContext, *mFirstGPUDevicePtr, CL_QUEUE_RECORDABLE_QCOM, &err);
                         if(err != CL_SUCCESS){
                             mIsCreateError = true;
@@ -297,6 +310,9 @@ OpenCLRuntime::OpenCLRuntime(const BackendConfig::PrecisionMode precision, const
     }else{
         mIsCreateError = true;
         MNN_ASSERT(platforms.size() > 0);
+    }
+    if (mIsCreateError) {
+        return;
     }
     {
         // Init info
@@ -326,77 +342,8 @@ OpenCLRuntime::OpenCLRuntime(const BackendConfig::PrecisionMode precision, const
             workItems[i] = _workItems[i];
         }
         mMaxWorkIterms = workItems;
-    } while(false);
+    } while(false);  
 
-}
-
-void OpenCLRuntime::setGpuMode(const int cl_mode_num) {
-    int totalSet = 0;
-    bool isSet = (cl_mode_num & MNN_GPU_MEMORY_BUFFER);
-    if(isSet) {
-        mMemType = BUFFER;
-        totalSet++;
-    }
-    isSet = (cl_mode_num & MNN_GPU_MEMORY_IMAGE);
-    if(isSet) {
-        mMemType = IMAGE;
-        totalSet++;
-    }
-    if(totalSet > 1) {
-        MNN_PRINT("set both BUFFER and IMAGE mode is not permitted, please check cl_mode:%x！\n", cl_mode_num);
-    }
-    
-    totalSet = 0;
-    isSet = (cl_mode_num & MNN_GPU_TUNING_NONE);
-    if(isSet) {
-        mTuneLevel = None;
-        totalSet++;
-    }
-    
-    isSet = (cl_mode_num & MNN_GPU_TUNING_FAST);
-    if(isSet) {
-        mTuneLevel = Fast;
-        totalSet++;
-    }
-    
-    isSet = (cl_mode_num & MNN_GPU_TUNING_NORMAL);
-    if(isSet) {
-        mTuneLevel = Normal;
-        totalSet++;
-    }
-    
-    isSet = (cl_mode_num & MNN_GPU_TUNING_HEAVY);
-    if(isSet) {
-        mTuneLevel = Heavy;
-        totalSet++;
-    }
-    
-    isSet = (cl_mode_num & MNN_GPU_TUNING_WIDE);
-    if(isSet) {
-        mTuneLevel = Wide;
-        totalSet++;
-    }
-
-    if(totalSet != 1) {
-        MNN_PRINT("set multi tuning mode is not permitted, please check cl_mode:%x！\n", cl_mode_num);
-    }
-    
-    totalSet = 0;
-    isSet = (cl_mode_num & MNN_GPU_RECORD_OP);
-    if(isSet) {
-        mDevideOpRecord = true;
-        totalSet++;
-    }
-    
-    isSet = (cl_mode_num & MNN_GPU_RECORD_BATCH);
-    if(isSet) {
-        mDevideOpRecord = false;
-        totalSet++;
-    }
-    
-    if(totalSet > 1) {
-        MNN_PRINT("set multi record kernel mode is not permitted, please check cl_mode:%x！\n", cl_mode_num);
-    }
 }
 
 void OpenCLRuntime::setCommandQueueProfileEnable() {
@@ -414,19 +361,15 @@ unsigned int OpenCLRuntime::getQueueNum() {
     return mQueueCount;
 }
 
-std::map<std::string, uint32_t>& OpenCLRuntime::preParamsMap(){
-    return mPreParams;
-}
-
 std::map<std::vector<uint32_t>, std::vector<uint32_t>>& OpenCLRuntime::tunedGemmParamsMap() {
     return mTunedGemmParams;
 }
 
-std::map<std::pair<std::string, std::vector<uint32_t>>, std::pair<std::vector<uint32_t>, uint32_t>>& OpenCLRuntime::tunedLwsMap() {
+std::map<std::pair<std::string, std::vector<uint32_t>>, TuneInfo>& OpenCLRuntime::tunedLwsMap() {
     return mTunedLws;
 }
     
-std::map<std::string, std::vector<std::pair<std::vector<uint32_t>, std::pair<std::vector<uint32_t>, uint32_t>>>>& OpenCLRuntime::getTuneLwsMap() {
+std::map<std::string, std::vector<TuneInfo>>& OpenCLRuntime::getTuneLwsMap() {
     return mTuneLws;
 }
 
@@ -452,10 +395,6 @@ std::vector<size_t> OpenCLRuntime::getMaxImage2DSize() {
 
 bool OpenCLRuntime::isSupportedFP16() const {
     return mIsSupportedFP16;
-}
-
-bool OpenCLRuntime::isDeviceSupportedFP16() const {
-    return mIsDeviceSupportedFP16;
 }
 
 bool OpenCLRuntime::isDeviceSupportedLowPower() const {
@@ -539,20 +478,20 @@ bool OpenCLRuntime::buildProgram(const std::string &buildOptionsStr, cl::Program
 
 
 std::shared_ptr<KernelWrap> OpenCLRuntime::buildKernel(const std::string &programName, const std::string &kernelName,
-                                      const std::set<std::string> &buildOptions, const Tensor *input, const Tensor *output) {
-    auto kwp = buildKernelWithCache(programName, kernelName, buildOptions, input, output, true);
+                                      const std::set<std::string> &buildOptions, int precisionLevel, const Tensor *input, const Tensor *output) {
+    auto kwp = buildKernelWithCache(programName, kernelName, buildOptions, precisionLevel, input, output, true);
     return kwp;
 }
 
 std::shared_ptr<KernelWrap> OpenCLRuntime::buildKernelWithCache(const std::string &programName, const std::string &kernelName,
-                                      const std::set<std::string> &buildOptions, const Tensor *input, const Tensor *output, bool useCache) {
+                                      const std::set<std::string> &buildOptions, int precisionLevel, const Tensor *input, const Tensor *output, bool useCache) {
     std::string buildOptionsStr;
-    if (mPrecisionLevel == 2) {// Fp16 Memory and fp16 compute
-        buildOptionsStr = "-DFLOAT=half -DFLOAT2=half2 -DFLOAT3=half3 -DFLOAT4=half4 -DFLOAT8=half8 -DFLOAT16=half16 -DCOMPUTE_FLOAT=half  -DCOMPUTE_FLOAT2=half2 -DCOMPUTE_FLOAT3=half3 -DCOMPUTE_FLOAT4=half4 -DCOMPUTE_FLOAT8=half8 -DCOMPUTE_FLOAT16=half16 -DCONVERT_COMPUTE_FLOAT2=convert_half2 -DCONVERT_COMPUTE_FLOAT4=convert_half4 -DCONVERT_COMPUTE_FLOAT8=convert_half8 -DCONVERT_COMPUTE_FLOAT16=convert_half16 -DRI_F=read_imageh -DWI_F=write_imageh -DCONVERT_FLOAT2=convert_half2 -DCONVERT_FLOAT4=convert_half4 -DCONVERT_FLOAT8=convert_half8 -DCONVERT_FLOAT16=convert_half16 -DMNN_SUPPORT_FP16";
-    } else if (mPrecisionLevel == 0) {// Fp16 Memory and fp32 compute
-        buildOptionsStr = "-DFLOAT=half -DFLOAT2=half2 -DFLOAT3=half3 -DFLOAT4=half4 -DFLOAT8=half8 -DFLOAT16=half16 -DCOMPUTE_FLOAT=float  -DCOMPUTE_FLOAT2=float2 -DCOMPUTE_FLOAT3=float3 -DCOMPUTE_FLOAT4=float4 -DCOMPUTE_FLOAT8=float8 -DCOMPUTE_FLOAT16=float16 -DCONVERT_COMPUTE_FLOAT2=convert_float2 -DCONVERT_COMPUTE_FLOAT4=convert_float4 -DCONVERT_COMPUTE_FLOAT8=convert_float8 -DCONVERT_COMPUTE_FLOAT16=convert_float16 -DCONVERT_FLOAT2=convert_half2 -DCONVERT_FLOAT4=convert_half4 -DCONVERT_FLOAT8=convert_half8 -DCONVERT_FLOAT16=convert_half16 -DRI_F=read_imageh -DWI_F=write_imageh -DMNN_SUPPORT_FP16";
+    if (precisionLevel == 2) {// Fp16 Memory and fp16 compute
+        buildOptionsStr = "-DFLOAT=half -DFLOAT2=half2 -DFLOAT3=half3 -DFLOAT4=half4 -DFLOAT8=half8 -DFLOAT16=half16 -DCOMPUTE_FLOAT=half  -DCOMPUTE_FLOAT2=half2 -DCOMPUTE_FLOAT3=half3 -DCOMPUTE_FLOAT4=half4 -DCOMPUTE_FLOAT8=half8 -DCOMPUTE_FLOAT16=half16 -DCONVERT_COMPUTE_FLOAT=convert_half -DCONVERT_COMPUTE_FLOAT2=convert_half2 -DCONVERT_COMPUTE_FLOAT3=convert_half3 -DCONVERT_COMPUTE_FLOAT4=convert_half4 -DCONVERT_COMPUTE_FLOAT8=convert_half8 -DCONVERT_COMPUTE_FLOAT16=convert_half16 -DRI_F=read_imageh -DWI_F=write_imageh -DCONVERT_FLOAT=convert_half  -DCONVERT_FLOAT2=convert_half2 -DCONVERT_FLOAT3=convert_half3 -DCONVERT_FLOAT4=convert_half4 -DCONVERT_FLOAT8=convert_half8 -DCONVERT_FLOAT16=convert_half16 -DMNN_SUPPORT_FP16";
+    } else if (precisionLevel == 0) {// Fp16 Memory and fp32 compute
+        buildOptionsStr = "-DFLOAT=half -DFLOAT2=half2 -DFLOAT3=half3 -DFLOAT4=half4 -DFLOAT8=half8 -DFLOAT16=half16 -DCOMPUTE_FLOAT=float  -DCOMPUTE_FLOAT2=float2 -DCOMPUTE_FLOAT3=float3 -DCOMPUTE_FLOAT4=float4 -DCOMPUTE_FLOAT8=float8 -DCOMPUTE_FLOAT16=float16 -DCONVERT_COMPUTE_FLOAT=convert_float -DCONVERT_COMPUTE_FLOAT2=convert_float2 -DCONVERT_COMPUTE_FLOAT3=convert_float3 -DCONVERT_COMPUTE_FLOAT4=convert_float4 -DCONVERT_COMPUTE_FLOAT8=convert_float8 -DCONVERT_COMPUTE_FLOAT16=convert_float16 -DCONVERT_FLOAT=convert_half  -DCONVERT_FLOAT2=convert_half2 -DCONVERT_FLOAT3=convert_half3 -DCONVERT_FLOAT4=convert_half4 -DCONVERT_FLOAT8=convert_half8 -DCONVERT_FLOAT16=convert_half16 -DRI_F=read_imageh -DWI_F=write_imageh -DMNN_SUPPORT_FP16";
     } else {// Fp32 Memory and fp32 compute
-        buildOptionsStr = "-DFLOAT=float -DFLOAT2=float2 -DFLOAT3=float3 -DFLOAT4=float4 -DFLOAT8=float8 -DFLOAT16=float16 -DCOMPUTE_FLOAT=float  -DCOMPUTE_FLOAT2=float2 -DCOMPUTE_FLOAT3=float3 -DCOMPUTE_FLOAT4=float4 -DCOMPUTE_FLOAT8=float8 -DCOMPUTE_FLOAT16=float16 -DCONVERT_COMPUTE_FLOAT2=convert_float2 -DCONVERT_COMPUTE_FLOAT4=convert_float4 -DCONVERT_COMPUTE_FLOAT8=convert_float8 -DCONVERT_COMPUTE_FLOAT16=convert_float16 -DRI_F=read_imagef -DFLOAT16=float16 -DWI_F=write_imagef -DCONVERT_FLOAT2=convert_float2 -DCONVERT_FLOAT4=convert_float4 -DCONVERT_FLOAT8=convert_float8 -DCONVERT_FLOAT16=convert_float16";
+        buildOptionsStr = "-DFLOAT=float -DFLOAT2=float2 -DFLOAT3=float3 -DFLOAT4=float4 -DFLOAT8=float8 -DFLOAT16=float16 -DCOMPUTE_FLOAT=float  -DCOMPUTE_FLOAT2=float2 -DCOMPUTE_FLOAT3=float3 -DCOMPUTE_FLOAT4=float4 -DCOMPUTE_FLOAT8=float8 -DCOMPUTE_FLOAT16=float16 -DCONVERT_COMPUTE_FLOAT=convert_float  -DCONVERT_COMPUTE_FLOAT2=convert_float2 -DCONVERT_COMPUTE_FLOAT3=convert_float3 -DCONVERT_COMPUTE_FLOAT4=convert_float4 -DCONVERT_COMPUTE_FLOAT8=convert_float8 -DCONVERT_COMPUTE_FLOAT16=convert_float16 -DRI_F=read_imagef -DFLOAT16=float16 -DWI_F=write_imagef -DCONVERT_FLOAT=convert_float  -DCONVERT_FLOAT2=convert_float2 -DCONVERT_FLOAT3=convert_float3 -DCONVERT_FLOAT4=convert_float4 -DCONVERT_FLOAT8=convert_float8 -DCONVERT_FLOAT16=convert_float16";
     }
     
     if(nullptr != input){
@@ -587,7 +526,7 @@ std::shared_ptr<KernelWrap> OpenCLRuntime::buildKernelWithCache(const std::strin
                 MNN_ASSERT(false);
             }
         } else {
-            if(mIsSupportedFP16){
+            if(precisionLevel != 1){
                 buildOptionsStr += " -DINPUT_TYPE_I=half";
                 buildOptionsStr += " -DINPUT_TYPE_I4=half4";
                 buildOptionsStr += " -DINPUT_TYPE=half";
@@ -625,7 +564,7 @@ std::shared_ptr<KernelWrap> OpenCLRuntime::buildKernelWithCache(const std::strin
                 buildOptionsStr += " -DCONVERT_OUTPUT16=convert_int16";
                 buildOptionsStr += " -DWI_DATA=write_imagei";
             } else {
-                MNN_PRINT("opencl input datatype not support, bit:%d\n", output->getType().bits);
+                MNN_PRINT("opencl output datatype not support, bit:%d\n", output->getType().bits);
                 MNN_ASSERT(false);
             }
         } else if(output->getType().code == halide_type_uint){
@@ -647,11 +586,11 @@ std::shared_ptr<KernelWrap> OpenCLRuntime::buildKernelWithCache(const std::strin
                 buildOptionsStr += " -DCONVERT_OUTPUT16=convert_uint16";
                 buildOptionsStr += " -DWI_DATA=write_imageui";
             } else {
-                MNN_PRINT("opencl input datatype not support, bit:%d\n", output->getType().bits);
+                MNN_PRINT("opencl output datatype not support, bit:%d\n", output->getType().bits);
                 MNN_ASSERT(false);
             }
         } else {
-            if(mIsSupportedFP16){
+            if(precisionLevel != 1){
                 buildOptionsStr += " -DOUTPUT_TYPE_I=half";
                 buildOptionsStr += " -DOUTPUT_TYPE_I4=half4";
                 buildOptionsStr += " -DCONVERT_OUTPUT_I4=convert_half4";
@@ -730,9 +669,9 @@ std::shared_ptr<KernelWrap> OpenCLRuntime::buildKernelWithCache(const std::strin
 }
 
 std::shared_ptr<KernelWrap> OpenCLRuntime::buildKernelFromSource(const std::string& source, const std::string &kernelName,
-                                                const std::set<std::string> &buildOptions) {
+                                                const std::set<std::string> &buildOptions, int precisionLevel) {
     std::string buildOptionsStr;
-    if (mIsSupportedFP16) {
+    if (precisionLevel != 1) {
         buildOptionsStr = "-DFLOAT=half -DFLOAT4=half4 -DFLOAT8=half8 -DFLOAT16=half16 -DRI_F=read_imageh -DWI_F=write_imageh -DCONVERT_FLOAT4=convert_half4 -DMNN_SUPPORT_FP16";
     } else {
         buildOptionsStr = "-DFLOAT=float -DFLOAT4=float4 -DFLOAT8=float8 -DRI_F=read_imagef -DFLOAT16=float16 -DWI_F=write_imagef -DCONVERT_FLOAT4=convert_float4";
@@ -820,6 +759,10 @@ std::pair<const void*, size_t> OpenCLRuntime::makeCache(void* tuneInfo) {
         cache->tuned.emplace_back(std::move(p));
     }
     tune->mInfos.clear();
+    
+    std::unique_ptr<BackendInfoT> backend(new BackendInfoT);
+    backend->deviceName = mDeviceInfo;
+    
     // Get All program's binary
     for (auto& iter : mBuildProgramMap) {
         std::unique_ptr<ShaderT> pro(new ShaderT);
@@ -828,12 +771,16 @@ std::pair<const void*, size_t> OpenCLRuntime::makeCache(void* tuneInfo) {
         // Only use first one
         pro->program = std::get<0>(iter.first);
         pro->buildInfo = std::get<1>(iter.first);
+        auto it = OpenCLProgramMd5Map.find(std::get<0>(iter.first));
+        if(it != OpenCLProgramMd5Map.end()){
+            pro->md5 = it->second;
+        }
         
         //MNN_PRINT("%s - %s - %s\n", pro->program.c_str(), pro->kernel.c_str(), pro->buildInfo.c_str());
         if(bufferSize != 0){
             pro->buffer.resize(bufferSize);
             ::memcpy(pro->buffer.data(), iter.second.Buffer.get(), bufferSize);
-            cache->programs.emplace_back(std::move(pro));
+            backend->programs.emplace_back(std::move(pro));
             continue;
         }
         auto devicesNumber = program.getInfo<CL_PROGRAM_NUM_DEVICES>();
@@ -848,16 +795,20 @@ std::pair<const void*, size_t> OpenCLRuntime::makeCache(void* tuneInfo) {
         auto proRaw = program.get();
         auto c = pro->buffer.data();
         clGetProgramInfo(proRaw, CL_PROGRAM_BINARIES, sizeof(unsigned char *), &c, nullptr);
-        cache->programs.emplace_back(std::move(pro));
+        backend->programs.emplace_back(std::move(pro));
     }
+    
     // Get All Autotuning cache
     for (auto& iter : mTunedLws) {
         std::unique_ptr<AutotuningT> tuning(new AutotuningT);
-        tuning->gloablSize = iter.first.second;
-        tuning->localSize = iter.second.first;
-        tuning->timeCost = iter.second.second;
+        TuneInfo info = iter.second;
+        tuning->name = info.programName;
+        tuning->md5 = info.md5;
+        tuning->gloablSize = info.globalSize;
+        tuning->localSize = info.localSize;
+        tuning->timeCost = info.timeCost;
         tuning->key = iter.first.first;
-        cache->tunings.emplace_back(std::move(tuning));
+        backend->tunings.emplace_back(std::move(tuning));
     }
 
     // Get All GemmInfo cache
@@ -865,16 +816,14 @@ std::pair<const void*, size_t> OpenCLRuntime::makeCache(void* tuneInfo) {
         std::unique_ptr<GemmInfoT> tuning(new GemmInfoT);
         tuning->gemmSize = iter.first;
         tuning->paramInfo = iter.second;
-        cache->gemm.emplace_back(std::move(tuning));
+        auto it = OpenCLProgramMd5Map.find("matmul_params_buf");
+        if(it != OpenCLProgramMd5Map.end()){
+            tuning->md5 = it->second;
+        }
+        backend->gemm.emplace_back(std::move(tuning));
     }
     
-    // Get All PreParam cache
-    for(auto& iter : mPreParams){
-        std::unique_ptr<PreParamInfoT> info(new PreParamInfoT);
-        info->preParamName = iter.first;
-        info->preParamData = iter.second;
-        cache->preParam.emplace_back(std::move(info));
-    }
+    cache->backends.emplace_back(std::move(backend));
     
     flatbuffers::FlatBufferBuilder builder;
     auto lastOffset = Cache::Pack(builder, cache.get());
@@ -892,105 +841,158 @@ bool OpenCLRuntime::setCache(std::pair<const void*, size_t> cache) {
     
     auto cacheBuffer = GetCache(cache.first);
     
-    if(nullptr == cacheBuffer->programs() && nullptr == cacheBuffer->tunings() && nullptr == cacheBuffer->gemm()) {
+    if(nullptr == cacheBuffer->backends()) {
         return false;
     }
-    
-    // Load Program
-    if (nullptr != cacheBuffer->programs()) {
-        auto programs = cacheBuffer->programs();
-        for (int i=0; i<programs->size(); ++i) {
-            auto shaderInfo = programs->GetAs<Shader>(i);
-            if (nullptr == shaderInfo->program()|| nullptr == shaderInfo->buildInfo() || nullptr == shaderInfo->buffer()) {
-                MNN_ERROR("Invalid Cache\n");
-                return false;
+    bool res = true;
+    auto backends = cacheBuffer->backends();
+    for(int i = 0; i < backends->size(); ++i){
+        auto backendinfo = backends->GetAs<BackendInfo>(i);
+        if(mDeviceInfo == backendinfo->deviceName()->str()){
+            // Load Auto Tuning Info
+            if (nullptr != backendinfo->tunings()) {
+                auto tuningInfo = backendinfo->tunings();
+                for (int i=0; i<tuningInfo->size(); ++i) {
+                    auto tun = tuningInfo->GetAs<Autotuning>(i);
+                    if (nullptr == tun->gloablSize() || nullptr == tun->localSize() || nullptr == tun->key() || nullptr == tun->name() || nullptr == tun->md5()) {
+                        MNN_ERROR("Error tunning info\n");
+                        res = false;
+                        continue;
+                    }
+                    auto program = tun->name()->str();
+                    auto md5 = tun->md5()->str();
+                    auto iter = OpenCLProgramMd5Map.find(program);
+                    if(iter != OpenCLProgramMd5Map.end()){
+                        if(iter->second != md5){
+                            res = false;
+                            continue;
+                        }
+                    }else{
+                        res = false;
+                        continue;
+                    }
+                    std::vector<uint32_t> glo(tun->gloablSize()->size());
+                    for (int v=0; v<glo.size(); ++v) {
+                        glo[v] = tun->gloablSize()->data()[v];
+                    }
+                    std::vector<uint32_t> loc(tun->localSize()->size());
+                    for (int v=0; v<loc.size(); ++v) {
+                        loc[v] = tun->localSize()->data()[v];
+                    }
+                    uint32_t cost = tun->timeCost();
+                    TuneInfo tuneInfo;
+                    tuneInfo.programName = program;
+                    tuneInfo.md5 = md5;
+                    tuneInfo.globalSize = glo;
+                    tuneInfo.localSize = loc;
+                    tuneInfo.timeCost = cost;
+                    mTunedLws.insert(std::make_pair(std::make_pair(tun->key()->str(), glo), tuneInfo));
+                    mTuneLws[tun->key()->str()].push_back(tuneInfo);
+                }
             }
-            auto program = shaderInfo->program()->str();
-            // Builder Info
-            std::string buildinfo = shaderInfo->buildInfo()->str();
             
-            auto buffer = shaderInfo->buffer()->data();
-            size_t bufferSize = shaderInfo->buffer()->size();
-            auto deviceId = mFirstGPUDevicePtr->get();
-            auto programRaw = clCreateProgramWithBinary(context().get(), 1, &deviceId, &bufferSize, (const unsigned char**)(&buffer), nullptr, nullptr);
-            if (!programRaw) {
-                MNN_ERROR("Can't load %s - %s load program\n", program.c_str(), buildinfo.c_str());
-                return false;
+            // Load Gemm Info
+            if (nullptr != backendinfo->gemm()) {
+                auto tuningInfo = backendinfo->gemm();
+                for (int i=0; i<tuningInfo->size(); ++i) {
+                    auto tun = tuningInfo->GetAs<GemmInfo>(i);
+                    if (nullptr == tun->gemmSize() || nullptr == tun->paramInfo() || nullptr == tun->md5()) {
+                        MNN_ERROR("Error tunning gemm info\n");
+                        res = false;
+                        continue;
+                    }
+                    auto md5 = tun->md5()->str();
+                    auto iter = OpenCLProgramMd5Map.find("matmul_params_buf");
+                    if(iter != OpenCLProgramMd5Map.end()){
+                        if(iter->second != md5){
+                            res = false;
+                            continue;
+                        }
+                    }else{
+                        res = false;
+                        continue;
+                    }
+                    MNN_ASSERT(tun->gemmSize()->size() == 7);
+                    std::vector<uint32_t> info(tun->gemmSize()->size());
+                    for (int v=0; v<info.size(); ++v) {
+                        info[v] = tun->gemmSize()->data()[v];
+                    }
+                    MNN_ASSERT(tun->paramInfo()->size() == 14);
+                    std::vector<uint32_t> params(tun->paramInfo()->size());
+                    for (int v=0; v<params.size(); ++v) {
+                        params[v] = tun->paramInfo()->data()[v];
+                    }
+                    mTunedGemmParams.insert(std::make_pair(info, params));
+                    TuneInfo tuneInfo;
+                    tuneInfo.programName = "matmul_params_buf";
+                    tuneInfo.md5 = md5;
+                    tuneInfo.globalSize = info;
+                    tuneInfo.localSize = params;
+                    tuneInfo.timeCost = 0;
+                    mTuneLws["Xgemm_tune"].push_back(tuneInfo);
+                }
             }
-            auto pro = cl::Program(programRaw);
-            auto res = buildProgram(buildinfo, &pro);
-            if (!res) {
-                MNN_ERROR("Can't build %s - %s load program\n", program.c_str(), buildinfo.c_str());
-                return false;
+            
+            // Load Program
+            if (nullptr != backendinfo->programs()) {
+                auto programs = backendinfo->programs();
+                for (int i=0; i<programs->size(); ++i) {
+                    auto shaderInfo = programs->GetAs<Shader>(i);
+                    if (nullptr == shaderInfo->program()|| nullptr == shaderInfo->buildInfo() || nullptr == shaderInfo->buffer() || nullptr == shaderInfo->md5()) {
+                        MNN_ERROR("Invalid Cache\n");
+                        res = false;
+                        continue;
+                    }
+                    auto program = shaderInfo->program()->str();
+                    auto md5 = shaderInfo->md5()->str();
+                    auto iter = OpenCLProgramMd5Map.find(program);
+                    if(iter != OpenCLProgramMd5Map.end()){
+                        if(iter->second != md5){
+                            res = false;
+                            continue;
+                        }
+                    }else{
+                        res = false;
+                        continue;
+                    }
+                    // Builder Info
+                    std::string buildinfo = shaderInfo->buildInfo()->str();
+                    
+                    auto buffer = shaderInfo->buffer()->data();
+                    size_t bufferSize = shaderInfo->buffer()->size();
+                    auto deviceId = mFirstGPUDevicePtr->get();
+                    auto programRaw = clCreateProgramWithBinary(context().get(), 1, &deviceId, &bufferSize, (const unsigned char**)(&buffer), nullptr, nullptr);
+                    if (!programRaw) {
+                        MNN_ERROR("Can't load %s - %s load program\n", program.c_str(), buildinfo.c_str());
+                        res = false;
+                        continue;
+                    }
+                    auto pro = cl::Program(programRaw);
+                    auto res = buildProgram(buildinfo, &pro);
+                    if (!res) {
+                        MNN_ERROR("Can't build %s - %s load program\n", program.c_str(), buildinfo.c_str());
+                        res = false;
+                        continue;
+                    }
+                    ProgramWithKernel pwk;
+                    pwk.program = pro;
+                    pwk.Buffer.reset(new char[bufferSize]);
+                    pwk.BufferSize = bufferSize;
+                    ::memcpy(pwk.Buffer.get(), buffer, bufferSize);
+                    mBuildProgramMap.insert(std::make_pair(std::make_tuple(program, buildinfo), pwk));
+                }
             }
-            ProgramWithKernel pwk;
-            pwk.program = pro;
-            pwk.Buffer.reset(new char[bufferSize]);
-            pwk.BufferSize = bufferSize;
-            ::memcpy(pwk.Buffer.get(), buffer, bufferSize);
-            mBuildProgramMap.insert(std::make_pair(std::make_tuple(program, buildinfo), pwk));
         }
     }
+    return res;
+}
 
-    // Load Auto Tuning Info
-    if (nullptr != cacheBuffer->tunings()) {
-        auto tuningInfo = cacheBuffer->tunings();
-        for (int i=0; i<tuningInfo->size(); ++i) {
-            auto tun = tuningInfo->GetAs<Autotuning>(i);
-            if (nullptr == tun->gloablSize() || nullptr == tun->localSize() || nullptr == tun->key()) {
-                MNN_ERROR("Error tunning info\n");
-                return false;
-            }
-            std::vector<uint32_t> glo(tun->gloablSize()->size());
-            for (int v=0; v<glo.size(); ++v) {
-                glo[v] = tun->gloablSize()->data()[v];
-            }
-            std::vector<uint32_t> loc(tun->localSize()->size());
-            for (int v=0; v<loc.size(); ++v) {
-                loc[v] = tun->localSize()->data()[v];
-            }
-            uint32_t cost = tun->timeCost();
-            mTunedLws.insert(std::make_pair(std::make_pair(tun->key()->str(), glo), std::make_pair(loc, cost)));
-            mTuneLws[tun->key()->str()].push_back(std::make_pair(glo, std::make_pair(loc, cost)));
-        }
-    }
-    
-    // Load Gemm Info
-    if (nullptr != cacheBuffer->gemm()) {
-        auto tuningInfo = cacheBuffer->gemm();
-        for (int i=0; i<tuningInfo->size(); ++i) {
-            auto tun = tuningInfo->GetAs<GemmInfo>(i);
-            if (nullptr == tun->gemmSize() || nullptr == tun->paramInfo()) {
-                MNN_ERROR("Error tunning gemm info\n");
-                return false;
-            }
-            MNN_ASSERT(tun->gemmSize()->size() == 7);
-            std::vector<uint32_t> info(tun->gemmSize()->size());
-            for (int v=0; v<info.size(); ++v) {
-                info[v] = tun->gemmSize()->data()[v];
-            }
-            MNN_ASSERT(tun->paramInfo()->size() == 14);
-            std::vector<uint32_t> params(tun->paramInfo()->size());
-            for (int v=0; v<params.size(); ++v) {
-                params[v] = tun->paramInfo()->data()[v];
-            }
-            mTunedGemmParams.insert(std::make_pair(info, params));
-        }
-    }
-    
-    //Load PreParam Info
-    if(nullptr != cacheBuffer->preParam()){
-        auto preParamInfo = cacheBuffer->preParam();
-        for(int i = 0; i < preParamInfo->size(); ++i){
-            auto info = preParamInfo->GetAs<PreParamInfo>(i);
-            if (nullptr == info->preParamName()) {
-                MNN_ERROR("Error preParam info\n");
-                return false;
-            }
-            mPreParams.insert(std::make_pair(info->preParamName()->str(), info->preParamData()));
-        }
-    }
-    return true;
+unsigned int OpenCLRuntime::getEventTime(cl::Event& event){
+    cl_int res = event.wait();
+    MNN_CHECK_CL_SUCCESS(res, "clEvent");
+    auto StartNanos = event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
+    auto StopNanos = event.getProfilingInfo<CL_PROFILING_COMMAND_END>();
+    return (unsigned int)((StopNanos - StartNanos) / 1000.0);
 }
 
 void OpenCLRuntime::printEventTime(){
@@ -1026,6 +1028,8 @@ void OpenCLRuntime::printEventTime(){
             conv_time += kernel_time;
         } else if (mEvents[i].first.length() >= 11 && mEvents[i].first.substr(0, 11) == "Convolution") {
             conv_time += kernel_time;
+        } else if (mEvents[i].first.length() >= 8 && mEvents[i].first.substr(0, 8) == "Strassen") {
+            conv_time += kernel_time;
         }
         if((mEvents[i].first.length() >= 10 && mEvents[i].first.substr(0, 10) == "While-gemm")) {
             loop_bg_time += kernel_time;
@@ -1042,6 +1046,10 @@ void OpenCLRuntime::printEventTime(){
         if((mEvents[i].first.length() >= 23 && mEvents[i].first.substr(0, 23) == "Conv-winograd-batchgemm")) {
             wino_gemm_time += kernel_time;
             conv_time += kernel_time;
+        }
+        if((mEvents[i].first.length() >= 6 && mEvents[i].first.substr(0, 6) == "Raster")) {
+            raster_num++;
+            raster_time += kernel_time;
         }
         
         kernels[i] = std::make_pair(mEvents[i].first, kernel_time);
@@ -1063,7 +1071,7 @@ void OpenCLRuntime::printEventTime(){
         MNN_PRINT("kernel time = %d    us %s\n", kernels[i].second, kernels[i].first.c_str());
     }
     mEvents.clear();
-    MNN_PRINT("total kernel time = %d  us, conv time = %d us (gemm2:%d us, gemm1:%d us, 1x1:%d us, ori:%d us, wino: %d us, other: %d us), while gemm time = %d us (core gemm time: %d us, softmax:%d us), ori softmax: %d us\n", mKernelTime, conv_time, conv_gemm2_buf_time, conv_gemm1_buf_time, conv_1x1_buf_time, conv_ori_buf_time, wino_gemm_time, conv_time-conv_gemm2_buf_time-conv_gemm1_buf_time-conv_1x1_buf_time-conv_ori_buf_time-wino_gemm_time, loop_bg_time, loop_bg_gemm_time, loop_softmax_time, ori_softmax_time);
+    MNN_PRINT("total kernel time = %d  us, conv time = %d us (gemm2:%d us, gemm1:%d us, 1x1:%d us, ori:%d us, wino: %d us, other: %d us), while gemm time = %d us (core gemm time: %d us, softmax:%d us), ori softmax: %d us, raster[%d] time: %d us\n", mKernelTime, conv_time, conv_gemm2_buf_time, conv_gemm1_buf_time, conv_1x1_buf_time, conv_ori_buf_time, wino_gemm_time, conv_time-conv_gemm2_buf_time-conv_gemm1_buf_time-conv_1x1_buf_time-conv_ori_buf_time-wino_gemm_time, loop_bg_time, loop_bg_gemm_time, loop_softmax_time, ori_softmax_time, raster_num, raster_time);
 #endif
 }
 } // namespace MNN

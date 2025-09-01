@@ -8,6 +8,7 @@
 
 #include "MNN_generated.h"
 #include <MNN/expr/Expr.hpp>
+#include <MNN/expr/ExecutorScope.hpp>
 #include <MNN/expr/Module.hpp>
 #include <MNN/expr/ExprCreator.hpp>
 #define MNN_OPEN_TIME_TRACE
@@ -82,17 +83,40 @@ static bool compareOutput(VARP output, const std::string& directName, const std:
     auto diffAbsMax = _ReduceMax(diff);
     auto absMaxV = absMax->readMap<float>()[0];
     auto diffAbsMaxV = diffAbsMax->readMap<float>()[0];
+    MNN_PRINT("For %s, max = %f, diffmax = %f, diff rate = %f\n", name.c_str(), absMaxV, diffAbsMaxV, diffAbsMaxV / fmaxf(absMaxV, 1e-6));
     if (absMaxV * 0.01f < diffAbsMaxV || MNN_IS_NAN(absMaxV)) {
         MNN_ERROR("TESTERROR %s value error : absMaxV:%f - DiffMax %f\n", name.c_str(), absMaxV, diffAbsMaxV);
         return false;
     }
     return true;
 }
+
+static inline std::vector<int> parseIntList(const std::string& str, char delim) {
+    std::vector<int> result;
+    std::ptrdiff_t p1 = 0, p2;
+    while (1) {
+        p2 = str.find(delim, p1);
+        if (p2 != std::string::npos) {
+            result.push_back(atoi(str.substr(p1, p2 - p1).c_str()));
+            p1 = p2 + 1;
+        } else {
+            result.push_back(atoi(str.substr(p1).c_str()));
+            break;
+        }
+    }
+    return result;
+}
 int main(int argc, char *argv[]) {
     if (argc < 3) {
-        MNN_ERROR("Usage: ./ModuleBasic.out ${test.mnn} ${Dir} [runMask] [forwardType] [runLoops] [numberThread] [precision | memory] [cacheFile]\n");
+        MNN_PRINT("=======================================================================================================================================\n");
+        MNN_ERROR("Usage: ./ModuleBasic.out ${test.mnn} ${Dir} [runMask] [forwardType] [runLoops] [numberThread] [precision | memory] [cacheFile] [cpuIds] [enableKleidiAI]\n");
+        MNN_PRINT("=======================================================================================================================================\n");
         return 0;
     }
+    BackendConfig backendConfigTmp;
+    auto _executor = Executor::newExecutor(MNN_FORWARD_CPU, backendConfigTmp, 1);
+    ExecutorScope _s(_executor);
+
     std::string modelName = argv[1];
     std::string directName = argv[2];
     MNN_PRINT("Test %s from input info: %s\n", modelName.c_str(), directName.c_str());
@@ -214,10 +238,25 @@ int main(int argc, char *argv[]) {
     if (argc > 8) {
         cacheFileName = argv[8];
     }
+    // CPU IDs
+    std::vector<int> cpuIds;
+    if (argc > 9) {
+        cpuIds = parseIntList(argv[9], ',');
+    }
+    MNN_PRINT("cpuIds: ");
+    for (auto id : cpuIds) {
+        MNN_PRINT("%d ", id);
+    }
+    bool enableKleidiAI = false;
+    if (argc > 10) {
+        enableKleidiAI = atoi(argv[10]) > 0 ? true : false;
+    }
+    MNN_PRINT("\n");
     FUNC_PRINT(precision);
     FUNC_PRINT(memory);
     FUNC_PRINT(power);
     FUNC_PRINT_ALL(cacheFileName, s);
+    FUNC_PRINT(enableKleidiAI);
     // create session
     MNN::ScheduleConfig config;
     config.type      = type;
@@ -239,6 +278,9 @@ int main(int argc, char *argv[]) {
     mConfig.shapeMutable = shapeMutable;
     std::shared_ptr<Executor::RuntimeManager> rtmgr(Executor::RuntimeManager::createRuntimeManager(config));
     rtmgr->setCache(cacheFileName);
+    rtmgr->setHint(MNN::Interpreter::INIT_THREAD_NUMBER, 4);
+    rtmgr->setHint(MNN::Interpreter::HintMode::CPU_CORE_IDS, cpuIds.data(), cpuIds.size());
+
     if (cpuDecreaseRate > 0 && cpuDecreaseRate <= 100) {
         rtmgr->setHint(Interpreter::CPU_LITTLECORE_DECREASE_RATE, cpuDecreaseRate);
     }
@@ -275,8 +317,33 @@ int main(int argc, char *argv[]) {
         rtmgr->setHint(Interpreter::WINOGRAD_MEMORY_LEVEL, 0);
     }
     if (runMask & 1024) {
-        rtmgr->setHint(Interpreter::DYNAMIC_QUANT_OPTIONS, 1);
+        /*
+        2: INPUT_BLOCK_QUANT
+        1: INPUT_SHARE_ONE_SCALE
+        0: INPUT_CHANNEL_QUANT
+        */
+        rtmgr->setHint(Interpreter::DYNAMIC_QUANT_OPTIONS, 2);
     }
+
+    if (enableKleidiAI) {
+        rtmgr->setHint(Interpreter::CPU_ENABLE_KLEIDIAI, true);
+    }
+
+    // rtmgr->setHint(Interpreter::CPU_SME2_INSTRUCTIONS, false);
+
+    if (runMask & 2048) {
+        rtmgr->setExternalPath("tmp", Interpreter::EXTERNAL_FEATUREMAP_DIR);
+    }
+    // set npu model dir, npu model and mnn model in same path
+    size_t pos = modelName.find_last_of("/\\");
+    std::string modelPath;
+    if (pos == std::string::npos) {
+        // current path
+        modelPath = "./";
+    } else {
+        modelPath = modelName.substr(0, pos);
+    }
+    rtmgr->setExternalPath(modelPath, 3);
     std::shared_ptr<Module> net;
     {
         AUTOTIME;
@@ -287,6 +354,9 @@ int main(int argc, char *argv[]) {
         }
         if (runMask & 64) {
             net.reset(Module::clone(net.get()));
+        }
+        if (net == nullptr) {
+            return 0;
         }
     }
     auto mInfo = net->getInfo();
@@ -323,9 +393,14 @@ int main(int argc, char *argv[]) {
             auto inputName = inputNames[i];
             // Resize
             auto shapeIter = inputShape.find(inputName);
+            auto order = mInfo->inputs[i].order;
+            if (MNN::Express::Dimensionformat::NC4HW4 == mInfo->inputs[i].order) {
+                order = MNN::Express::Dimensionformat::NCHW;
+            }
+
             if (shapeIter != inputShape.end()) {
                 auto s = shapeIter->second;
-                inputs[i] = _Input(s, mInfo->defaultFormat, mInfo->inputs[i].type);
+                inputs[i] = _Input(s, order, mInfo->inputs[i].type);
             }
             auto info = inputs[i]->getInfo();
             if (info->type == halide_type_of<float>()){
@@ -338,7 +413,9 @@ int main(int argc, char *argv[]) {
                 auto temp = _Cast(floatVar, info->type);
                 inputs[i]->input(temp);
             }
-            inputs[i] = _Convert(inputs[i], mInfo->inputs[i].order);
+            if (MNN::Express::Dimensionformat::NC4HW4 == mInfo->inputs[i].order) {
+                inputs[i] = _Convert(inputs[i], MNN::Express::Dimensionformat::NC4HW4);
+            }
         }
     }
 #undef LOAD_DATA
@@ -419,6 +496,7 @@ int main(int argc, char *argv[]) {
         for (int i = 0; i < t; ++i) {
             Timer _l;
             auto out = net->onForward(inputs);
+            Variable::compute(out);
             for (auto o : out) {
                 ((MNN::Tensor*)o->getTensor())->wait(MNN::Tensor::MAP_TENSOR_READ, true);
             }

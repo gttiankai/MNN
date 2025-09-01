@@ -11,6 +11,7 @@
 #include <string>
 #include <MNN/MNNDefine.h>
 #include <fstream>
+struct PostTreatContext;
 class MNN_PUBLIC modelConfig {
 public:
     modelConfig()
@@ -21,6 +22,7 @@ public:
           model(modelConfig::MAX_SOURCE),
           saveHalfFloat(false){
     }
+    ~ modelConfig ();
     enum MODEL_SOURCE { TENSORFLOW = 0, CAFFE, ONNX, MNN, TFLITE, TORCH, JSON, MAX_SOURCE };
 
     // MNN model path
@@ -50,9 +52,12 @@ public:
     int optimizeLevel = 1;
     bool keepInputFormat = true;
     bool alignDenormalizedValue = true;
-    bool detectSparseSpeedUp = true;
+    bool detectSparseSpeedUp = false;
     bool convertMatmulToConv = true;
+    bool useGeluApproximation = true;
     bool transformerFuse = false;
+    bool allowCustomOp = false;
+    bool groupConvNative = false;
     std::string customOpLibs = "";
     std::string authCode = "";
     std::string testDir = "";
@@ -66,6 +71,8 @@ public:
     int64_t externalTreshold = 1024 * 64;
     std::ofstream* externalFile = nullptr;
     int64_t externalOffset = 0;
+    bool useOriginRNNImpl = false;
+    PostTreatContext* compressInfo = nullptr;
 };
 
 #endif // CONFIG_HPP

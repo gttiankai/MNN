@@ -37,7 +37,9 @@ public:
         int geometryMask = 0xFFFF;
         bool checkNetBuffer = true;
         RuntimeHint runtimeHint;
-        void setHint(Interpreter::HintMode hint, int magic);
+        void setHint(Interpreter::HintMode hint, int value);
+        void setHint(Interpreter::HintMode hint, int* value, size_t size);
+        void setHintPtr(Interpreter::HintMode hint, int value);
         void setMode(Interpreter::SessionMode mode);
         void setExternalPath(std::string path, int type);
     };
@@ -46,6 +48,8 @@ public:
     ~Session();
 
     Session* clone(RuntimeInfo&& runtime, std::shared_ptr<Schedule::ScheduleInfo> sharedConst);
+    static void createPipelineBackend(Schedule::PipelineInfo& iter, RuntimeInfo& runtime);
+
 public:
     /**
      * @brief infer.
@@ -87,6 +91,9 @@ public:
 
     Runtime* getCPURuntime() {
         return mRuntime.second.get();
+    }
+    const RuntimeInfo& getRuntime() const {
+        return mRuntime;
     }
 
 public:
@@ -145,7 +152,6 @@ protected:
     }
 
 private:
-    void _clearCache();
     void _setUpTensorInfo(const Schedule::ScheduleInfo& info);
 
 private:

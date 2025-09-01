@@ -21,25 +21,24 @@ ErrorCode CPUCastCreator::cast(const void* inputRaw, void* outputRaw, ConvertTyp
     int remain = number % pack;
     if (type == FlOAT_TO_INT8) {
         scale = (scale == 0.f ? 0.f : 1.f / scale);
-        std::vector<float> scales(pack, scale);
-        bn->int8Functions()->MNNFloat2Int8((float*)(inputRaw), (int8_t*)(outputRaw), c4Size, scales.data(), min, max, zero);
+        bn->int8Functions()->MNNFloat2Int8((float*)(inputRaw), (int8_t*)(outputRaw), c4Size, &scale, min, max, &zero, 0);
         if (remain > 0) {
             std::vector<float> tempSrc(pack);
             std::vector<int8_t> tempDst(pack);
             ::memcpy(tempSrc.data(), (float*)(inputRaw) + c4Size * pack, remain * sizeof(float));
-            bn->int8Functions()->MNNFloat2Int8(tempSrc.data(), tempDst.data(), 1, scales.data(), min, max, zero);
+            bn->int8Functions()->MNNFloat2Int8(tempSrc.data(), tempDst.data(), 1, &scale, min, max, &zero, 0);
             ::memcpy(static_cast<int8_t*>(outputRaw) + c4Size * pack, tempDst.data(), remain * sizeof(int8_t));
         }
         return NO_ERROR;
     }
     if (type == INT8_TO_FlOAT) {
         std::vector<float> scales(pack, scale);
-        bn->int8Functions()->MNNInt8ScaleToFloat((float*)(outputRaw), (int8_t*)(inputRaw), scales.data(), c4Size, zero);
+        bn->int8Functions()->MNNInt8ScaleToFloat((float*)(outputRaw), (int8_t*)(inputRaw), &scale, c4Size, &zero, 0);
         if (remain > 0) {
             std::vector<float> tempDst(pack);
             std::vector<int8_t> tempSrc(pack);
             ::memcpy(tempSrc.data(), (int8_t*)(inputRaw) + c4Size * pack, remain * sizeof(int8_t));
-            bn->int8Functions()->MNNInt8ScaleToFloat(tempDst.data(), tempSrc.data(), scales.data(), 1, zero);
+            bn->int8Functions()->MNNInt8ScaleToFloat(tempDst.data(), tempSrc.data(), &scale, 1, &zero, 0);
             ::memcpy(static_cast<float*>(outputRaw) + c4Size * pack, tempDst.data(), remain * sizeof(float));
         }
         return NO_ERROR;

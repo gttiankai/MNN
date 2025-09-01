@@ -27,6 +27,7 @@ public:
                                 const MNN::Op* op) override;
     virtual void onExecuteBegin() const override;
     virtual void onExecuteEnd() const override;
+    void finish();
     virtual bool onSelectDynamicAllocator(int index, int maxIndex) override;
     virtual void onResizeBegin() override;
     virtual ErrorCode onResizeEnd() override;
@@ -39,6 +40,7 @@ public:
     const VulkanPipelineFactory* getPipelineFactory() const;
     const VulkanPipeline* getPipeline(const std::string& key, const std::vector<VkDescriptorType>& types,
                                       const std::vector<uint32_t>& localSize = std::vector<uint32_t>()) const;
+    SharedPtr<VulkanPipeline> getPrivatePipeline(const std::string& key, const std::vector<VkDescriptorType>& types);
 
     const VulkanCommandPool& getPool() const {
         return (* mRuntime->mCmdPool);
@@ -90,12 +92,26 @@ public:
     VULKAN_TENSOR getBuffer(const Tensor* tensor) const;
     std::shared_ptr<VulkanBuffer> allocUniform(const void* src = nullptr, int size = 0);
     void recycleUniform(std::shared_ptr<VulkanBuffer> buffer);
+    void copyGPUToGPUBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size, VkDeviceSize srcOffset, VkDeviceSize dstOffset) const;
     void copyToGPUBuffer(const void* src, VkBuffer buffer, VkDeviceSize size, VkDeviceSize offset) const;
+    std::shared_ptr<VulkanBuffer> createHostBuffer(size_t size) const;
 
     const VulkanDevice& device() const;
+#ifdef ENABLE_VULKAN_TIME_PROFILE
+    void pushQueryPool(std::shared_ptr<VulkanQueryPool> queryPool) {
+        mQueryPools.push_back(queryPool);
+    }
+    void pushExecutionName(std::string executionName) {
+        mExecutionNames.push_back(executionName);
+    }
+#endif
+
 private:
     void _finish() const;
     void _requireHostBuffer(size_t size) const;
+#ifdef ENABLE_VULKAN_TIME_PROFILE
+    void printTimeProfile() const;
+#endif
     mutable std::shared_ptr<VulkanBuffer> mHostBuffer;
 
     std::shared_ptr<VulkanCommandPool::Buffer> mCmdBuffer;
@@ -110,6 +126,11 @@ private:
     bool mDirect;
     const VulkanRuntime* mRuntime;
     bool mUseAutoTune = true;
+
+#ifdef ENABLE_VULKAN_TIME_PROFILE
+    mutable std::vector<std::shared_ptr<VulkanQueryPool>> mQueryPools;
+    mutable std::vector<std::string> mExecutionNames;
+#endif
 };
 
 

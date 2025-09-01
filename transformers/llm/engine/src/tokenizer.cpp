@@ -5,6 +5,7 @@
 //  ZhaodeWang
 //
 
+#include <MNN/MNNDefine.h>
 #include "tokenizer.hpp"
 #include <fstream>
 #include <sstream>
@@ -100,7 +101,6 @@ Tokenizer* Tokenizer::createTokenizer(const std::string& filename) {
         return tokenizer;
     }
     line_str >> tokenizer_type;
-    printf("tokenizer_type = %d\n", tokenizer_type);
     // create tokenizer
     switch (tokenizer_type)
     {
@@ -450,38 +450,40 @@ void Tiktoken::encode(const std::string& str, std::vector<int>& ids) {
     if (str.empty()) {
         return;
     }
-    size_t i = 0;
-    while (i < str.size()) {
-        bool found_pair = false;
-        // Attempt to match the longest possible symbol
-        size_t longest_match_len = 0;
-        std::string longest_match;
-
-        // Check substrings of decreasing length
-        for (size_t len = str.size() - i; len > 0; --len) {
-            std::string token = str.substr(i, len);
-            auto it = encoder_.find(token);
-            if (it != encoder_.end()) {
-                if (len > longest_match_len) {
-                    longest_match_len = len;
-                    longest_match = it->first;
-                }
-            }
-        }
-
-        if (!longest_match.empty()) {
-            ids.push_back(encoder_.at(longest_match));
-            i += longest_match_len;
-        } else {
-            // If no matching symbol is found, this typically means an error in the encoding
-            // or the input text contains characters that the encoder doesn't know how to handle
-            std::cerr << "Error: No encoding found for the sequence starting at position " << i << std::endl;
-            return;
+    auto it = str.begin();
+    while(it!=str.end()) {
+        auto last_it = it;
+        int token_id = encoder_.find(it, str.end());
+        if (token_id>=0) { ids.push_back(token_id); }
+        else {
+            MNN_ERROR("Error: No encoding found for the sequence %s\n", std::string(last_it, it).c_str());
         }
     }
 }
 
 std::string Tiktoken::decode(int id) {
+    if (id >= decoder_.size()) {
+        return "";
+    }
+    return decoder_[id];
+}
+
+bool BertTokenizer::load_vocab(std::ifstream& tok_file) {
+    std::string line;
+    std::getline(tok_file, line);
+    int vocab_len = std::stoi(line);
+    // load vocab
+    decoder_.resize(vocab_len);
+    for (int i = 0; i < vocab_len; i++) {
+        std::getline(tok_file, line);
+        auto token = base64_decode(line);
+        encoder_.insert({token, i});
+        decoder_[i] = token;
+    }
+    return true;
+}
+
+std::string BertTokenizer::decode(int id) {
     if (id >= decoder_.size()) {
         return "";
     }
@@ -711,11 +713,17 @@ void HuggingfaceTokenizer::bpe(const std::wstring& token, const BPERanks& bpe_ra
 }
 
 void HuggingfaceTokenizer::encode(const std::string& str, std::vector<int>& ids) {
-    std::regex re("('s|'t|'re|'ve|'m|'ll|'d| ?[[:alpha:]]+| ?[[:digit:]]+| ?[^\\s\\w]+|\\s+)");
+    /* original regex from tokenizer.json
+        "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
+     //    std::regex re("('s|'t|'re|'ve|'m|'ll|'d| ?[[:alpha:]]+| ?[[:digit:]]+| ?[^\\s\\w]+|\\s+)");
+     */
+    std::regex re("('s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n[:alpha:][:digit:]]?[[:alpha:]]+|[[:digit:]]| ?[^\\s[:alpha:][:digit:]]+[\r\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+", std::regex_constants::icase);
+    
     std::string input = str;
     std::vector<std::string> result;
-    std::string token;
     std::smatch match;
+    
+    std::string token;
     while (std::regex_search(input, match, re)) {
         token = match.str(0);
         input = match.suffix().str();

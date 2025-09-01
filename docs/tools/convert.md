@@ -1,5 +1,9 @@
 # 模型转换工具
-[从源码编译](../compile/tools.html#id2)
+
+模型转换工具能够将其他格式的模型（如：ONNX, TFLITE, TorchScript, Tensorflow等）转换为MNN模型，以方便MNN模型在各种平台上部署。
+- 从源码编译可参考[这里](../compile/other.html#id2)
+- 从pip安装（`pip install MNN`）使用可以参考[这里](python.html#mnnconvert)
+
 ## 参数说明
 ```bash
 Usage:
@@ -8,9 +12,9 @@ Usage:
   -h, --help                    Convert Other Model Format To MNN Model
 
   -v, --version                 显示当前转换器版本
-  
+
   -f, --framework arg           需要进行转换的模型类型, ex: [TF,CAFFE,ONNX,TFLITE,MNN,TORCH, JSON]
-  
+
       --modelFile arg           需要进行转换的模型文件名, ex: *.pb,*caffemodel
 
       --batch arg               如果模型时输入的batch是动态的，可以指定转换后的batch数
@@ -26,30 +30,30 @@ Usage:
                                     - 0：正常优化
                                     - 1：优化后模型尽可能小；
                                     - 2：优化后模型尽可能快；
-      
+
       --prototxt arg            caffe模型结构描述文件, ex: *.prototxt
-      
+
       --MNNModel arg            转换之后保存的MNN模型文件名, ex: *.mnn
-      
+
       --fp16                    将conv/matmul/LSTM的float32参数保存为float16，
-      													模型将减小一半，精度基本无损
-      
+      													模型将减小一半，精度基本无损，运行速度和float32模型一致
+
       --bizCode arg             MNN模型Flag, ex: MNN
-      
+
       --debug                   使用debug模型显示更多转换信息
-      
+
       --forTraining             保存训练相关算子，如BN/Dropout，default: false
-      
+
       --weightQuantBits arg     arg=2~8，此功能仅对conv/matmul/LSTM的float32权值进行量化，
       													仅优化模型大小，加载模型后会解码为float32，量化位宽可选2~8，
-                                运行速度和float32模型一致。8bit时精度基本无损，模型大小减小4倍
+                                不开启动态量化的情况下，运行速度和float32模型一致。8bit时精度基本无损，模型大小减小4倍
                                 default: 0，即不进行权值量化
 
       --weightQuantAsymmetric   与weightQuantBits结合使用，决定是否用非对称量化，默认为`true`
-      
+
       --compressionParamsFile arg
-                                使用MNN模型压缩工具箱生成的模型压缩信息文件或根据用户提供的量化参数来生成对应的量化模型，量化参数文件可参考tools/converter/user_provide_quant_params.json
-                                
+                                使用MNN模型压缩工具箱生成的模型压缩信息文件或根据用户提供的量化参数来生成对应的量化模型，量化参数文件可参考tools/converter/user_provide_quant_params.json 。如果文件不存在，且开启了weightQuantBits等量化功能，会在相应路径生成模型压缩信息文件(json格式)，可后续编辑
+
       --saveStaticModel         固定输入形状，保存静态模型， default: false
 
       --targetVersion arg       兼容旧的推理引擎版本，例如：1.2f
@@ -75,10 +79,13 @@ Usage:
       --alignDenormalizedValue arg
                                 可选值：{0, 1}， 默认为1, 当`float(|x| < 1.18e-38)`会被视为0
 
-      --detectSparseSpeedUp arg
-                                可选值：{0, 1}， 默认为1, 会检测权重是否使用稀疏化加速
+      --detectSparseSpeedUp     检测权重是否使用稀疏化加速/压缩，有可能减少模型大小，但增大模型转换时间
 
-      --saveExternalData        将权重，常量等数据存储在额外文件中，默认为`false`
+      --saveExternalData        将权重，常量等数据存储在额外文件中，默认为0，也就是`false`
+
+      --useGeluApproximation    在进行Gelu算子合并时，使用Gelu的近似算法，默认为1 ，也就是`true`
+
+      --useOriginRNNImpl    LSTM和GRU算子是否使用原始算子实现，默认关闭。若开启，性能可能提升，但无法进行LSTM/GRU的量化
 
 ```
 
@@ -203,7 +210,7 @@ model_script.save('model_script.pt')
 - 示例，以ONNX为例：
    - 假设存在错误；此处为实验将MNN的Binary_ADD实现修改为错误实现；执行上述测试脚本，效果如下，显示`TESTERROR`表明可以转换但是推理结果有错误：
       ```bash
-      python ../tools/script/testMNNFromOnnx.py mobilenetv2-7.onnx      
+      python ../tools/script/testMNNFromOnnx.py mobilenetv2-7.onnx
       Dir exist
       onnx/test.onnx
       tensor(float)
@@ -245,7 +252,7 @@ model_script.save('model_script.pt')
       Save mnn result to  .error director
       # binary search test layers ...
       # test layer output 339: ERROR, 339's inputs is [489, 498]
-      python ../tools/script/testMNNFromOnnx.py mobilenetv2-7.onnx 339 
+      python ../tools/script/testMNNFromOnnx.py mobilenetv2-7.onnx 339
       ...
       output: 339
       339: (1, 24, 56, 56, )
@@ -279,7 +286,7 @@ model_script.save('model_script.pt')
 ./MNNConvert -f CAFFE --OP
 ./MNNConvert -f TF --OP
 ./MNNConvert -f ONNX --OP
-./MNNConvert -f TORCH --OP 
+./MNNConvert -f TORCH --OP
 ```
 
 ## 模型打印
@@ -307,19 +314,86 @@ cat mobilenet_v1.json
 , "main_type": "Convolution2D", "main":
 { "common":
 { "dilateX": 1, "dilateY": 1, "strideX": 2, "strideY": 2, "kernelX": 3, "kernelY": 3, "padX": 1, "padY": 1, "group": 1, "outputCount": 32, "relu": true, "padMode": "CAFFE", "relu6": false, "inputCount": 0 }
-, weight: 
+, weight:
 [ -0.0, -0.0, 0.0, -0.0, ... ]
-, bias: 
+, bias:
 [ -0.000004, 0.694553, 0.416608,  ... ]
  }
 , "defaultDimentionFormat": "NHWC" }
-, 
+,
 ...
  ]
-, "tensorName": 
+, "tensorName":
 [ "data", "conv1", "conv2_1/dw", "conv2_1/sep", "conv2_2/dw", "conv2_2/sep", "conv3_1/dw", "conv3_1/sep", "conv3_2/dw", "conv3_2/sep", "conv4_1/dw", "conv4_1/sep", "conv4_2/dw", "conv4_2/sep", "conv5_1/dw", "conv5_1/sep", "conv5_2/dw", "conv5_2/sep", "conv5_3/dw", "conv5_3/sep", "conv5_4/dw", "conv5_4/sep", "conv5_5/dw", "conv5_5/sep", "conv5_6/dw", "conv5_6/sep", "conv6/dw", "conv6/sep", "pool6", "fc7", "prob" ]
 , "sourceType": "CAFFE", "bizCode": "AliNNTest", "tensorNumber": 0, "preferForwardType": "CPU" }
 ```
 
 ## Python版
 我们提供了预编译的MNNConvert Python工具：[mnnconvert](python.html#mnnconvert)
+
+
+## MNN2QNNModel
+### 功能
+利用QNN工具将mnn模型转为可以在QNN运行的mnn模型结构文件以及QNN离线序列化模型，后续可以在QNN上运行该离线模型。
+- 注意：该工具目前仅支持在Linux环境运行，需要提前下载QNN SDK，参考QNN环境准备(docs/inference/npu.md)
+### 参数
+`Usage: ./MNN2QNNModel src.mnn dst.mnn qnn_sdk_path qnn_model_name qnn_context_config.json`
+- `src.mnn:str` 源mnn模型文件路径
+- `dst.mnn:str` 目标mnn模型文件路径
+- `qnn_sdk_path:str` QNN SDK绝对路径
+- `qnn_model_name:str` 转完后的QNN模型图名字，同时需要新建同名文件夹，后续生成的QNN产物放在该目录下
+- `qnn_context_config.json:str` QNN生成context binary的配置文件（示例文件：source/backend/qnn/convertor/config_example/context_config.json和source/backend/qnn/convertor/config_example/htp_backend_extensions.json），通常需要改context_config.json文件中路径地址，htp_backend_extensions.json中graph_names（需要与qnn_model_name保持一致）、soc_id、dsp_arch（根据机型参考[高通官网的设备架构表](https://docs.qualcomm.com/bundle/publicresource/topics/80-63442-50/overview.html#supported-snapdragon-devices)进行设置）
+### 使用示例
+```
+cd mnn_path
+mkdir build
+cd build
+// 确保已经把高通SDK头文件拷贝到对应路径
+cmake .. -DMNN_QNN=ON -DMNN_QNN_CONVERT_MODE=ON -DMNN_SUPPORT_TRANSFORMER_FUSE=ON -DMNN_WITH_PLUGIN=ON
+make -j16
+
+// 新建qnn_model_name名字文件夹，后续产物放在这里 
+mkdir qnn_smolvlm_model
+
+./MNN2QNNModel mnnfuse_smolvlm/visual.mnn qnn_smolvlm_model.mnn /mnt/2Tpartition/huaiqian/QNN_DEV/qairt_2_32 qnn_smolvlm_model ../source/backend/qnn/convertor/config_example/context_config.json
+
+Can't open file:/sys/devices/system/cpu/cpufreq/schedutil/affected_cpus
+Can't open file:/sys/devices/system/cpu/cpufreq/boost/affected_cpus
+CPU Group: [ 20  21  13  23  1  15  3  17  5  19  7  10  11  9  12  22  0  14  2  16  4  18  6  8 ], 2200000 - 3800000
+The device supports: i8sdot:0, fp16:0, i8mm: 0, sve2: 0, sme2: 0
+Load Cache file error.
+2025-07-30 16:10:05,068 -    INFO - qnn-model-lib-generator: Model cpp file path  : qnn_smolvlm_model/qnn_smolvlm_model.cpp
+2025-07-30 16:10:05,068 -    INFO - qnn-model-lib-generator: Model bin file path  : qnn_smolvlm_model/qnn_smolvlm_model.bin
+2025-07-30 16:10:05,069 -    INFO - qnn-model-lib-generator: Library target       : [['x86_64-linux-clang']]
+2025-07-30 16:10:05,069 -    INFO - qnn-model-lib-generator: Library name         : qnn_smolvlm_model
+2025-07-30 16:10:05,069 -    INFO - qnn-model-lib-generator: Output directory     : qnn_smolvlm_model/lib
+2025-07-30 16:10:05,069 -    INFO - qnn-model-lib-generator: Output library name  : qnn_smolvlm_model
+2025-07-30 16:10:59,923 -    INFO - qnn-model-lib-generator: Target: x86_64-linux-clang	Library: /home/mnnteam/tianbu/AliNNPrivate/build/qnn_smolvlm_model/lib/x86_64-linux-clang/libqnn_smolvlm_model.so
+[Pass]: qnn-model-lib-generator success!
+qnn-context-binary-generator pid:1490535
+[Pass]: qnn-context-binary-generator success!
+npu model path:./qnn_smolvlm_model.bin
+[All Pass]: npu model generator success!
+```
+`[All Pass]: npu model generator success!`说明整个过程成功。结果：
+- 生成所需的两个模型dst.mnn和qnn_model_name/binary/qnn_model_name.bin两个QNN文件。
+- 将这两个文件替换原来src.mnn使用，运行设置为CPU后端，
+- 正确性验证，例如：
+```
+/* 
+1、确保已经把高通库文件push到对应路径，已经环境变量设置。参考QNN环境准备(docs/inference/npu.md)
+2、shapeMutable设为false，在input.json文件中设置
+3、需要设置CPU后端运行，实际QNN图以Plugin插件形式运行在QNN后端。
+ */
+ 
+./ModuleBasic.out qnn_smolvlm_model.mnn dir 0 0 10
+```
+### 生成多种QNN设备模型脚本
+tools/script/genQNNModelsFromMNN.py中提供了8Gen1 ~ 8Elite设备的QNN模型生成脚本
+```
+// 使用示例
+cd mnn_path
+cd build
+python3 ../tools/script/genQNNModelsFromMNN.py --config_path ../source/backend/qnn/convertor/config_example/ --graph_name visual_qnn --qnn_sdk_root_path /mnt/2Tpartition/tianbu/QNN/qairt/2.37.0.250724/ --src_model visual.mnn --executable_path ./MNN2QNNModel
+```
+后续将在qnn_models文件夹下生成8Gen1 ~ 8Elite设备的QNN模型产物。

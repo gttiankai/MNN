@@ -29,7 +29,7 @@ extern "C" {
 void MNNInt8ToUInt8(void* ptr, int count);
 }
 #endif
-
+#define QUANT_INFO_BYTES 4
 namespace MNN {
 
 IdstConvolutionInt8::IdstConvolutionInt8(const Convolution2DCommon* convOp, Backend* b,
@@ -39,12 +39,13 @@ IdstConvolutionInt8::IdstConvolutionInt8(const Convolution2DCommon* convOp, Back
     int UNIT, SRC_UNIT, DST_XUNIT;
     core->MNNGetGemmUnit(&UNIT, &SRC_UNIT, &DST_XUNIT);
     int PackUnit = static_cast<CPUBackend*>(b)->functions()->pack;
-    
-    mBias.reset(ROUND_UP(biasSize, PackUnit));
+    int ocUp4 = ROUND_UP(biasSize, PackUnit);
+    int ocUpHp = ROUND_UP(biasSize, UNIT);
+    mBias.reset(ocUp4);
     mBias.clear();
     auto biasDest = mBias.get();
     mAMin         = common->quan->aMin();
-    mAMax         = common->quan->aMax();
+    mAMax         = common->quan->aMaxOrBits();
     mQuanScale    = common->quan->quantScale();
 
     // The postTreat will contain scale_bias and biasRelu, so the bias will be add twice
@@ -65,25 +66,31 @@ IdstConvolutionInt8::IdstConvolutionInt8(const Convolution2DCommon* convOp, Back
     auto kernelCount        = kx * ky;
     auto srcCount           = mSrcCount;
     std::vector<int> shape;
-    if (SRC_UNIT > PackUnit) {
-        MNN_ASSERT(SRC_UNIT % UNIT == 0);
-        shape = {UP_DIV(outputCount, UNIT), UP_DIV(UP_DIV(srcCount, PackUnit) * kernelCount, SRC_UNIT / PackUnit), UNIT, SRC_UNIT};
-    } else {
-        shape = {UP_DIV(outputCount, UNIT), UP_DIV(srcCount, SRC_UNIT) * kernelCount, UNIT, SRC_UNIT};
-    }
-    mWeight.reset(Tensor::createDevice<int8_t>(shape));
-    mFakeBias.reset(Tensor::createDevice<float>({(int)ROUND_UP(biasSize, PackUnit)}));
-    mFakeWeightBias.reset(Tensor::createDevice<float>({(int)ROUND_UP(biasSize, PackUnit)}));
+    shape = {1, UP_DIV(outputCount, UNIT), UP_DIV(srcCount, SRC_UNIT) * kernelCount, UNIT, SRC_UNIT};
+    mFakeBias.reset(Tensor::createDevice<float>({ocUpHp}));
+    int weightlen = shape[0] * shape[1] * shape[2] * shape[3] * shape[4];
+    int quantlen = 2 * ocUpHp * QUANT_INFO_BYTES;
+    mWeight.reset(Tensor::createDevice<int8_t>({weightlen + quantlen}));
     mValid = b->onAcquireBuffer(mWeight.get(), Backend::STATIC);
     mValid &= b->onAcquireBuffer(mFakeBias.get(), Backend::STATIC);
-    mValid &= b->onAcquireBuffer(mFakeWeightBias.get(), Backend::STATIC);
     if (!mValid) {
         MNN_ERROR("Memory not enough\n");
         return;
     }
-    ConvInt8TiledExecutor::reorderWeight(mWeight.get(), (uint8_t*)common->weight.get(), SRC_UNIT, UNIT, srcCount, outputCount, kernelCount, PackUnit);
+    AutoStorage<uint8_t> weightReordered(weightlen);
+    AutoStorage<float> fakeWeightScaleBias(2 * ocUp4);
+    if (weightReordered.get() == nullptr || fakeWeightScaleBias.get() == nullptr) {
+        MNN_ERROR("Memory not enough\n");
+        return;
+    }
+    int32_t info[6] = {1, outputCount, srcCount, kernelCount, UNIT, SRC_UNIT};
+    ConvInt8TiledExecutor::reorderWeight(weightReordered.get(), (uint8_t*)common->weight.get(), info);
     ::memset(mFakeBias->host<float>(), 0, mFakeBias->size());
-    ::memset(mFakeWeightBias->host<float>(), 0, mFakeWeightBias->size());
+    auto ptr = (float*)fakeWeightScaleBias.get();
+    ::memset(ptr, 0, 2 * ocUp4 * 4);
+    for (int i = 0; i < ocUp4; ++i) {
+        ptr[i] = 1.f;
+    }
 #ifdef MNN_USE_SSE
     for (int oz = 0; oz < outputCount; ++oz) {
         auto srcZ = common->weight.get() + oz * kernelCount * srcCount;
@@ -94,6 +101,8 @@ IdstConvolutionInt8::IdstConvolutionInt8(const Convolution2DCommon* convOp, Back
         mFakeBias->host<float>()[oz] = static_cast<float>(offset) * 1.f;
     }
 #endif
+    int32_t params[6] = {shape[0], shape[1], shape[2], shape[3], shape[4], ocUp4};
+    ConvInt8TiledExecutor::packWeightAndQuantInfo(mWeight->host<int8_t>(), (int8_t*)weightReordered.get(), (int8_t*)fakeWeightScaleBias.get(), params, QUANT_INFO_BYTES);
 }
 
 IdstConvolutionInt8::~IdstConvolutionInt8() {
@@ -122,7 +131,7 @@ ErrorCode IdstConvolutionInt8::onResize(const std::vector<Tensor*>& inputs, cons
     mTempBuffer.buffer().dimensions    = 3;
     mTempBuffer.buffer().dim[0].extent = number;
     mTempBuffer.buffer().dim[1].extent = DST_XUNIT;
-    mTempBuffer.buffer().dim[2].extent = mWeight->length(1) * SRC_UNIT;
+    mTempBuffer.buffer().dim[2].extent = mIm2ColParamter.kernelCountUnit * SRC_UNIT;
     TensorUtils::setLinearLayout(&mTempBuffer);
 
     bool success = backend()->onAcquireBuffer(&mSrcCopyBuffer, Backend::DYNAMIC);
@@ -154,6 +163,9 @@ ErrorCode IdstConvolutionInt8::onExecute(const std::vector<Tensor*>& inputs, con
     int PackUnit = static_cast<CPUBackend*>(backend())->functions()->pack;
     
     auto gemmKernel = coreInt->Int8GemmKernel;
+    if (SRC_UNIT > PackUnit) {
+        memset(mTempBuffer.host<int8_t>(), 0, mTempBuffer.size());
+    }
     
     //        AUTOTIME;
     auto input        = inputs[0];
@@ -175,7 +187,7 @@ ErrorCode IdstConvolutionInt8::onExecute(const std::vector<Tensor*>& inputs, con
         mQuanScale,
         mQuanScale
     };
-    int8_t zeroPoint = 0;
+    float zeroPoint = 0;
     
     std::vector<float> fakeScale(ocC4 * PackUnit, 1.0f);
     QuanPostTreatParameters quanParam;
@@ -184,9 +196,14 @@ ErrorCode IdstConvolutionInt8::onExecute(const std::vector<Tensor*>& inputs, con
     quanParam.useInt8 = 0;
     float fp32minmax[2] = {-std::numeric_limits<float>().max(), std::numeric_limits<float>().max()};
     quanParam.fp32minmax = fp32minmax;
-    quanParam.weightQuanBias = mFakeWeightBias->host<float>();
     std::vector<float> fakeSrcKernleSum(DST_XUNIT, 0.f);
     quanParam.srcKernelSum = fakeSrcKernleSum.data();
+    std::vector<float> fakeInputScale(DST_XUNIT, 1.f);
+    quanParam.inputScale = fakeInputScale.data();
+    std::vector<float> fakeWeightKernelsSum(ROUND_UP(output->channel(), UNIT__), 0.f);
+    quanParam.weightKernelSum = fakeWeightKernelsSum.data();
+    quanParam.inputBias = nullptr;
+    quanParam.blockNum = 1;
 
     // MNN_PRINT("%s, %d, %d, %d,%d->%d,%d\n", layer->layer.layerId, layer->kernelSize[0], layer->kernelSize[1],
     // input->d1, input->d2, output->d1, output->d2);
@@ -199,7 +216,7 @@ ErrorCode IdstConvolutionInt8::onExecute(const std::vector<Tensor*>& inputs, con
         auto srcOrigin = input->host<float>() + input->stride(0) * batchIndex;
         auto dstOrigin = output->host<float>() + output->stride(0) * batchIndex;
 
-        MNNFloat2Int8(srcOrigin, srcCopy, inputTotalSize / 4, quantScale, mAMin, mAMax, zeroPoint);
+        MNNFloat2Int8(srcOrigin, srcCopy, inputTotalSize / 4, &mQuanScale, mAMin, mAMax, &zeroPoint, 0);
         int tileCount = UP_DIV(count, DST_XUNIT);
 
         threadNumber        = std::max(((CPUBackend*)backend())->threadNumber(), 1);
@@ -210,7 +227,7 @@ ErrorCode IdstConvolutionInt8::onExecute(const std::vector<Tensor*>& inputs, con
             auto srcPtr     = (int8_t const **)(mBlitInfo.ptr() + tId * mBlitInfoStride.first);
             auto el         = (int32_t *)(srcPtr + mBlitInfoStride.second);
 
-            int32_t info[4];
+            int32_t info[5];
             info[1] = mIm2ColParamter.iw * mIm2ColParamter.ih;
             info[2] = DST_XUNIT;
             info[3] = mIm2ColParamter.strideX;
@@ -225,6 +242,7 @@ ErrorCode IdstConvolutionInt8::onExecute(const std::vector<Tensor*>& inputs, con
                     ::memset(colAddr, zeroPoint, col_buffer_size);
                 }
                 info[0] = number;
+                info[4] = realDstCount;
                 if (number > 0) {
                     blitProc(colAddr, srcPtr, info, el);
                 }

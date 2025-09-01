@@ -403,10 +403,6 @@
 # pragma message("cl2.hpp: USE_CL_DEVICE_FISSION is deprecated. Define CL_HPP_USE_CL_DEVICE_FISSION instead")
 # define CL_HPP_USE_CL_DEVICE_FISSION
 #endif
-#if !defined(CL_HPP_ENABLE_EXCEPTIONS) && defined(__CL_ENABLE_EXCEPTIONS)
-# pragma message("cl2.hpp: __CL_ENABLE_EXCEPTIONS is deprecated. Define CL_HPP_ENABLE_EXCEPTIONS instead")
-# define CL_HPP_ENABLE_EXCEPTIONS
-#endif
 #if !defined(CL_HPP_NO_STD_VECTOR) && defined(__NO_STD_VECTOR)
 # pragma message("cl2.hpp: __NO_STD_VECTOR is deprecated. Define CL_HPP_NO_STD_VECTOR instead")
 # define CL_HPP_NO_STD_VECTOR
@@ -3813,6 +3809,24 @@ public:
             }
         }
     }
+
+    Buffer(
+        const Context& context,
+        cl_mem_flags flags,
+        const cl_import_properties_arm *properties,
+        void *memory,
+        size_type size,
+        cl_int* err = NULL)
+    {
+        cl_int error;
+        object_ = ::clImportMemoryARM(context(), flags, properties, memory, size, &error);
+
+        detail::errHandler(error, __CREATE_BUFFER_ERR);
+        if (err != NULL) {
+            *err = error;
+        }
+    }
+
 
     /*!
      * \brief Construct a Buffer from a host container via iterators using a specified context.

@@ -32,7 +32,7 @@ static void generateCombinations(const std::vector<std::vector<uint32_t>> &candi
 }
     
     
-static bool isCandidateValid(uint32_t kwg, uint32_t kwi, uint32_t mwg, uint32_t mdimc, uint32_t vwm, uint32_t nwg, uint32_t ndimc, uint32_t vwn, uint32_t mdima, uint32_t ndimb, uint32_t sa, uint32_t sb, OpenCLRuntime *runtime, const std::vector<uint32_t>& gemmSize) {
+static bool isCandidateValid(uint32_t kwg, uint32_t kwi, uint32_t mwg, uint32_t mdimc, uint32_t vwm, uint32_t nwg, uint32_t ndimc, uint32_t vwn, uint32_t mdima, uint32_t ndimb, uint32_t sa, uint32_t sb, OpenCLRuntime *runtime, const std::vector<uint32_t>& gemmSize, int precision) {
     // problem size align
     if(gemmSize[0] % mwg != 0 || gemmSize[1] % nwg != 0) {
         return false;
@@ -79,7 +79,7 @@ static bool isCandidateValid(uint32_t kwg, uint32_t kwi, uint32_t mwg, uint32_t 
     if(sb) {
         local_mem_size += kwg * nwg;
     }
-    if(runtime->isSupportedFP16()) {
+    if(precision != BackendConfig::Precision_High) {
         local_mem_size *= 2;
     } else {
         local_mem_size *= 4;
@@ -127,35 +127,155 @@ static bool isCandidateValid(uint32_t kwg, uint32_t kwi, uint32_t mwg, uint32_t 
     
     return true;
 }
+
+static bool GemmlocalWSTune(const std::map<std::string, std::vector<TuneInfo>> &tuneMap, const std::vector<uint32_t> &gemmSize, std::vector<uint32_t>& res, OpenCLRuntime *runtime, int precision){
+    auto iter = tuneMap.find("Xgemm_tune");
+    if(iter == tuneMap.end()){
+        return false;
+    }
+    auto TuneInfoVec = iter->second;
+    uint32_t minPoint = UINT_MAX;
+    int index = -1;
+    for(int i = 0; i < TuneInfoVec.size(); ++i){
+        // Layout+Precision, Batch, Bias+GroupSize must equall
+        if(gemmSize[3] != TuneInfoVec[i].globalSize[3] || gemmSize[4] != TuneInfoVec[i].globalSize[4] || gemmSize[5] != TuneInfoVec[i].globalSize[5]){
+            continue;
+        }
+        auto combinations = TuneInfoVec[i].localSize;
+        uint32_t kwg   = combinations[0];
+        uint32_t kwi   = combinations[1];
+        uint32_t mdima = combinations[2];
+        uint32_t mdimc = combinations[3];
+        uint32_t mwg   = combinations[4];
+        uint32_t ndimb = combinations[5];
+        uint32_t ndimc = combinations[6];
+        uint32_t nwg   = combinations[7];
+        uint32_t sa    = combinations[8];
+        uint32_t sb    = combinations[9];
+        uint32_t strm  = combinations[10];
+        uint32_t strn  = combinations[11];
+        uint32_t vwm   = combinations[12];
+        uint32_t vwn   = combinations[13];
+        
+        if(!isCandidateValid(kwg, kwi, mwg, mdimc, vwm, nwg, ndimc, vwn, mdima, ndimb, sa, sb, runtime, gemmSize, precision)) {
+            continue;
+        }
+        uint32_t point = 0;
+        for(int j = 0; j < 3; ++j){
+            point += std::abs(static_cast<int>(gemmSize[j]) - static_cast<int>(TuneInfoVec[i].globalSize[j]));
+        }
+        
+        if(point < minPoint){
+            index = i;
+            minPoint = point;
+        }
+    }
+    if(index != -1){
+        res = TuneInfoVec[index].localSize;
+    } else{
+        return false;
+    }
+    return true;
+}
     
 std::vector<uint32_t> getGemmParams(const std::vector<uint32_t> &gemmSize, const std::vector<cl::Buffer> tensorMemory,
-                                       OpenCLRuntime *runtime) {
-    MNN_ASSERT(gemmSize.size() == 6); // M, N, K, Layout, Batch, Bias
+                                       OpenCLRuntime *runtime, int precision, int tuneLevel) {
+    MNN_ASSERT(gemmSize.size() == 6); // M, N, K, Layout+Precision, Batch, Bias+GroupSize
     MNN_ASSERT(gemmSize[0] % 16 == 0);
     MNN_ASSERT(gemmSize[1] % 16 == 0);
     MNN_ASSERT(gemmSize[2] % 4 == 0);
 
-    MNN_ASSERT((gemmSize[5] == 0 && tensorMemory.size() == 3) || (gemmSize[5] >= 1 && tensorMemory.size() == 4));
+    int layoutType = gemmSize[3] % 10;
+    int mixPrecision = gemmSize[3] / 10;
+    int biasType = gemmSize[5] % 10;
+    int groupSize = gemmSize[5] / 10 + 1;
+    MNN_ASSERT((biasType == 0 && tensorMemory.size() == 3) || (biasType >= 1 && tensorMemory.size() == 4));
     auto& tunedGemmParams = runtime->tunedGemmParamsMap();
+    auto& tuneLws = runtime->getTuneLwsMap();
     
     std::vector<uint32_t> info(gemmSize);
-    uint32_t isFp16 = runtime->isSupportedFP16();
-    info.emplace_back(isFp16);
+    uint32_t precisionType = precision;
+    if(precisionType == 2 && mixPrecision > 0) {
+        precisionType = 0;
+    }
+    info.emplace_back(precisionType);
     
     if (tunedGemmParams.find(info) != tunedGemmParams.end()) {
         return tunedGemmParams[info];
     }
     
-    if(runtime->getCLTuneLevel() == None) {
-        auto getMaxDivisor = [](uint32_t num) -> uint32_t {
-            std::vector<int> divisors = {128, 64, 32};
-            for (const auto& divisor : divisors) {
-                if (num % divisor == 0) {
-                    return divisor;
-                }
+    auto getMaxDivisor = [](uint32_t num) -> uint32_t {
+        std::vector<int> divisors = {128, 64, 32};
+        for (const auto& divisor : divisors) {
+            if (num % divisor == 0) {
+                return divisor;
             }
-            return 16;
-        };
+        }
+        return 16;
+    };
+    
+    // top gpu device and large computation
+    if(runtime->getGpuLevel() >= MEDIUM){
+        // total computation
+        auto compute_ratio = 1.0 * gemmSize[4] * gemmSize[0] / 256.0 * gemmSize[1] / 256.0 * gemmSize[2] / 256.0;
+        auto thread_ratio = 1.0 * gemmSize[4] * gemmSize[0] / 256.0 * gemmSize[1] / 256.0;
+            
+        // each dimension is even
+        bool is_even =  gemmSize[0] >= 256 && gemmSize[1] >= 128 && gemmSize[2] >= 128;
+        is_even |= gemmSize[1] >= 128 && gemmSize[2] >= 128 && gemmSize[4] >= 4;
+        bool is_div = gemmSize[0] % 64 == 0 && gemmSize[1] % 32 == 0;
+        if(compute_ratio >= 1.0 && thread_ratio >= 1.0 && is_even && is_div) {
+            int maxDivsorM = getMaxDivisor(gemmSize[0]);
+            int maxDivsorN = getMaxDivisor(gemmSize[1]);
+            maxDivsorM = maxDivsorM > 64 ? 64 : maxDivsorM;
+            maxDivsorN = maxDivsorN > 32 ? 32 : maxDivsorN;
+            std::vector<uint32_t> params_prefer = {16, 2, 16, 16, 64, 8, 8, 32, 0, 0, 0, 0, 4, 4};
+            params_prefer[2] = maxDivsorM / 4;
+            params_prefer[3] = maxDivsorM / 4;
+            params_prefer[4] = maxDivsorM;
+            params_prefer[5] = maxDivsorN / 4;
+            params_prefer[6] = maxDivsorN / 4;
+            params_prefer[7] = maxDivsorN;
+                
+            return params_prefer;
+        }
+    }
+    if(runtime->getGpuLevel() == TOP && (tuneLevel == None || tuneLevel == Fast)) {
+        // total computation
+        auto compute_ratio = 1.0 * gemmSize[4] * gemmSize[0] / 512.0 * gemmSize[1] / 512.0 * gemmSize[2] / 512.0;
+        auto thread_ratio = 1.0 * gemmSize[4] * gemmSize[0] / 512.0 * gemmSize[1] / 512.0;
+
+        // each dimension is even
+        bool is_even =  gemmSize[0] >= 512 && gemmSize[1] >= 256 && gemmSize[2] >= 256;
+        is_even |= gemmSize[1] >= 128 && gemmSize[2] >= 128 && gemmSize[4] >= 4;
+        bool is_div = gemmSize[0] % 64 == 0 && gemmSize[1] % 64 == 0;
+        if(compute_ratio >= 1.0 && thread_ratio >= 1.0 && is_even && is_div) {
+            int maxDivsorM = getMaxDivisor(gemmSize[0]);
+            int maxDivsorN = getMaxDivisor(gemmSize[1]);
+            std::vector<uint32_t> params_prefer = {16, 2, 16, 16, 128, 16, 16, 128, 0, 0, 0, 0, 8, 8};
+            params_prefer[4] = maxDivsorM;
+            params_prefer[7] = maxDivsorN;
+            params_prefer[12] = maxDivsorM / 16;
+            params_prefer[13] = maxDivsorN / 16;
+            
+            return params_prefer;
+        }
+    }
+    std::vector<uint32_t> tuneLwsRes;
+    if(GemmlocalWSTune(tuneLws, gemmSize, tuneLwsRes, runtime, precision)){
+        return tuneLwsRes;
+    }
+    
+    std::vector<uint32_t> params_prefer = {16, 2, 4, 4, 16, 4, 4, 16, 0, 0, 1, 0, 2, 2};
+
+    auto thread_ratio = 1.0 * gemmSize[4] * gemmSize[0] / 512.0 * gemmSize[1] / 512.0;
+    bool is_div = gemmSize[0] % 64 == 0 && gemmSize[1] % 32 == 0;
+    // init params with pretty suitable candidate to avoid to slow initial
+    if(thread_ratio >= 1.0 && is_div) {
+        params_prefer.assign({16, 2, 16, 16, 64 , 8 , 8 , 32 , 0, 0, 0, 0, 4, 4});
+    }
+    
+    if(tuneLevel == None) {
         float multiNum = 1.0 * gemmSize[0] / 512.0 * gemmSize[1] / 512.0 * gemmSize[2] / 512.0;
         int maxDivsorM = getMaxDivisor(gemmSize[0]);
         int maxDivsorN = getMaxDivisor(gemmSize[1]);
@@ -178,15 +298,14 @@ std::vector<uint32_t> getGemmParams(const std::vector<uint32_t> &gemmSize, const
                 return {16, 2, 8, 8, 64, 8, 8, 64, 0, 0, 1, 0, 4, 4};
             }
         }
-        return {16, 2, 4, 4, 16, 4, 4, 16, 0, 0, 1, 0, 2, 2};
+        return params_prefer;
     }
 
     std::vector<std::vector<uint32_t>> totalCombinations; // save total candidate combinations
-    std::vector<uint32_t> params_prefer = {16, 2, 4, 4, 16, 4, 4, 16, 0, 0, 1, 0, 2, 2};
     totalCombinations.emplace_back(params_prefer);
     uint32_t min_cost = UINT_MAX;
     
-    if(runtime->getCLTuneLevel() >= Wide) {
+    if(tuneLevel >= Wide) {
         // set candidates=
         totalCombinations.push_back({16, 2, 16, 16, 64 , 8 , 8 , 128, 0, 0, 0, 0, 4, 8});//12
         totalCombinations.push_back({16, 2, 16, 16, 128, 8 , 8 , 64 , 0, 0, 0, 0, 8, 8});//11 ..
@@ -195,14 +314,15 @@ std::vector<uint32_t> getGemmParams(const std::vector<uint32_t> &gemmSize, const
         totalCombinations.push_back({16, 2, 8 , 8 , 16 , 8 , 8 , 64, 0, 0, 0, 0, 2, 8});
         totalCombinations.push_back({16, 2, 16, 16, 64 , 8 , 8 , 128, 0, 0, 0, 1, 4, 8});//10
 
-        totalCombinations.push_back({16, 2, 16, 16, 64 , 8 , 8 , 32 , 0, 0, 0, 0, 4, 4});
         totalCombinations.push_back({16, 2, 8,  8 , 32 , 8 , 8 , 128, 0, 0, 1, 0, 2, 8});//2
         totalCombinations.push_back({16, 2, 16, 16, 64 , 8 , 8 , 128, 0, 0, 1, 1, 2, 8});//12
         totalCombinations.push_back({16, 2, 16, 16, 128, 8 , 8 , 64 , 0, 0, 1, 1, 2, 8});//2
         totalCombinations.push_back({16, 2, 16, 16, 128, 8 , 8 , 128, 0, 0, 0, 0, 8, 8});
         totalCombinations.push_back({16, 2, 8 , 8 , 16 , 8 , 8 , 128, 0, 0, 0, 0, 2, 8});
+        totalCombinations.push_back({16, 2, 4, 4, 32, 8, 8, 32, 0, 0, 0, 0, 8, 2});
+        totalCombinations.push_back({16, 2, 4, 4, 16, 8, 8, 32, 0, 0, 0, 0, 4, 2});
 
-        if(runtime->getCLTuneLevel() < Fast) {
+        if(tuneLevel < Fast) {
             totalCombinations.push_back({16, 2, 16, 16, 128, 8 , 8 , 64 , 0, 0, 1, 0, 8, 8});//4
             totalCombinations.push_back({16, 2, 16, 16, 128, 8 , 8 , 64 , 0, 0, 0, 1, 8, 8});//6
             totalCombinations.push_back({16, 2, 16, 16, 128, 8 , 8 , 64 , 0, 0, 1, 1, 8, 8});//4
@@ -226,14 +346,17 @@ std::vector<uint32_t> getGemmParams(const std::vector<uint32_t> &gemmSize, const
             
             totalCombinations.push_back({16, 2, 8, 8, 32, 8, 8, 32, 0, 0, 1, 0, 2, 4});
             totalCombinations.push_back({16, 2, 8, 8, 16, 8, 8, 32, 0, 0, 1, 1, 2, 4});
+            totalCombinations.push_back({16, 2, 4, 4, 16, 8, 8, 64, 0, 0, 0, 0, 2, 8});
+            totalCombinations.push_back({16, 2, 4, 4, 64, 8, 8, 32, 0, 0, 1, 0, 4, 4});
+            totalCombinations.push_back({16, 2, 4, 4, 32, 8, 8, 64, 0, 0, 0, 1, 2, 4});
         }
     } else {
         // get all combinations
         std::vector<std::vector<uint32_t>> candidates = {
             {16, 32},         // KWG
             {2},              // KWI
-            {8, 16},          // MDIMA
-            {8, 16},          // MDIMC
+            {4, 8, 16},          // MDIMA
+            {4, 8, 16},          // MDIMC
             {16, 32, 64, 128}, // MWG
             {8, 16},          // NDIMB
             {8, 16},          // NDIMC
@@ -265,7 +388,7 @@ std::vector<uint32_t> getGemmParams(const std::vector<uint32_t> &gemmSize, const
         uint32_t vwm   = totalCombinations[i][12];
         uint32_t vwn   = totalCombinations[i][13];
         
-        if(isCandidateValid(kwg, kwi, mwg, mdimc, vwm, nwg, ndimc, vwn, mdima, ndimb, sa, sb, runtime, gemmSize)) {
+        if(isCandidateValid(kwg, kwi, mwg, mdimc, vwm, nwg, ndimc, vwn, mdima, ndimb, sa, sb, runtime, gemmSize, precision)) {
             
             std::set<std::string> buildOptions;
             buildOptions.clear();
@@ -284,7 +407,7 @@ std::vector<uint32_t> getGemmParams(const std::vector<uint32_t> &gemmSize, const
             buildOptions.emplace("-DVWM="   + std::to_string(vwm));
             buildOptions.emplace("-DVWN="   + std::to_string(vwn));
             
-            if(gemmSize[3] >= 4) {
+            if(layoutType >= 4) {
                 buildOptions.emplace(" -DOUTPUTMN");
             }
             if(runtime->getGpuType() == GpuType::ADRENO) {
@@ -292,24 +415,29 @@ std::vector<uint32_t> getGemmParams(const std::vector<uint32_t> &gemmSize, const
                 buildOptions.emplace(" -DRELAX_WORKGROUP_SIZE=1");
             }
             
-            if(gemmSize[5] >= 1) {
-                buildOptions.emplace(" -DBIAS_TYPE=" + std::to_string((int)gemmSize[5]));
+            if(biasType >= 1) {
+                buildOptions.emplace(" -DBIAS_TYPE=" + std::to_string((int)biasType));
+            }
+            if(mixPrecision > 0) {
+                buildOptions.emplace("-DPRECISION_COMPUTE=float -DCONVERT_PRECISION_COMPUTE=convert_float");
+                buildOptions.emplace("-DPRECISION_COMPUTE2=float2 -DCONVERT_PRECISION_COMPUTE2=convert_float2");
+                buildOptions.emplace("-DPRECISION_COMPUTE4=float4 -DCONVERT_PRECISION_COMPUTE4=convert_float4");
+                buildOptions.emplace("-DPRECISION_COMPUTE8=float8 -DCONVERT_PRECISION_COMPUTE8=convert_float8");
+                buildOptions.emplace("-DPRECISION_COMPUTE16=float16 -DCONVERT_PRECISION_COMPUTE16=convert_float16");
             }
 
             int localM = mdimc;
             int localN = ndimc;
             
-            std::shared_ptr<KernelWrap> kernel = runtime->buildKernel("matmul_params_buf", "Xgemm", buildOptions);
+            std::shared_ptr<KernelWrap> kernel;
+            if(gemmSize[4] > 1) {
+                kernel =    runtime->buildKernel("matmul_params_buf", "XgemmBatched", buildOptions, precision);
+            } else {
+                kernel = runtime->buildKernel("matmul_params_buf", "Xgemm", buildOptions, precision);
+            }
             if(kernel == nullptr) {
                 continue;
             }
-            if(gemmSize[4] > 1) {
-                kernel =    runtime->buildKernel("matmul_params_buf", "XgemmBatched", buildOptions);
-                if(kernel == nullptr) {
-                    continue;
-                }
-            }
-            
             if(localM * localN > runtime->getMaxWorkGroupSize(kernel)) {
                 continue;
             }
@@ -326,52 +454,59 @@ std::vector<uint32_t> getGemmParams(const std::vector<uint32_t> &gemmSize, const
             // A: [n, l, e]
             // B: [n, l, h]
             
-            cl::Event event;
-            int idx            = 0;
+            int cost_time;
+            int idx = 0;
             cl_int ret = CL_SUCCESS;
             ret |= kernel->get().setArg(idx++, static_cast<int>(gemmSize[0]));
             ret |= kernel->get().setArg(idx++, static_cast<int>(gemmSize[1]));
             ret |= kernel->get().setArg(idx++, static_cast<int>(gemmSize[2]));
             ret |= kernel->get().setArg(idx++, alpha);
             ret |= kernel->get().setArg(idx++, beta);
+            
+            int stride[4] = {(int)gemmSize[0], (int)gemmSize[1], (int)gemmSize[1], (int)gemmSize[1]};
+            if(layoutType < 4) {
+                stride[2] = gemmSize[0]; // output: [N, M]
+            }
             if(gemmSize[4] > 1) {
                 int batch_offset_a = gemmSize[0] * gemmSize[2];
                 int batch_offset_b = gemmSize[1] * gemmSize[2];
                 int batch_offset_c = gemmSize[0] * gemmSize[1];
+                int batch_offset[4] = {batch_offset_a, batch_offset_b, batch_offset_c, 0};
+                int base_ptr_offset[4] = {0, 0, 0, 0};
+
+                int group[4] = {1, (int)groupSize, 1, (int)gemmSize[4]};
 
                 ret |= kernel->get().setArg(idx++, tensorMemory[0]);
-                ret |= kernel->get().setArg(idx++, batch_offset_a);
                 ret |= kernel->get().setArg(idx++, tensorMemory[1]);
-                ret |= kernel->get().setArg(idx++, batch_offset_b);
-                if(gemmSize[5] == 1) {
+                if(biasType > 0) {
                     ret |= kernel->get().setArg(idx++, tensorMemory[3]);
-                    ret |= kernel->get().setArg(idx++, gemmSize[1]);
-                } else if(gemmSize[5] > 1) {
-                    MNN_ERROR("BatchGemm with bias type > 1 (elementwise) not supported! please check\n");
                 }
                 ret |= kernel->get().setArg(idx++, tensorMemory[2]);
-                ret |= kernel->get().setArg(idx++, batch_offset_c);
-                
+                ret |= kernel->get().setArg(idx++, sizeof(batch_offset), batch_offset);
+                ret |= kernel->get().setArg(idx++, sizeof(batch_offset), base_ptr_offset);
+                ret |= kernel->get().setArg(idx++, sizeof(stride), stride);
+                ret |= kernel->get().setArg(idx++, sizeof(group), group);
+
                 MNN_CHECK_CL_SUCCESS(ret, "setArg getGemmParams XgemmBatchhed Kernel");
                 
+                cl::Event event;
                 auto res = CL_SUCCESS;
                 res = runtime->commandQueue().enqueueNDRangeKernel(kernel->get(), cl::NullRange, {globalWorkSize[0], globalWorkSize[1], globalWorkSize[2]}, {localWorkSize[0], localWorkSize[1], localWorkSize[2]}, nullptr, &event);
                 if (res != CL_SUCCESS) {
                     MNN_PRINT("XgemmBatched params tune error: %d\n", res);
                     continue;
                 }
+
+                cost_time = (int)runtime->getCostTime(&event);
             } else {
                 int offset_a = 0;
                 int offset_b = 0;
                 int offset_c = 0;
                 int offset[4] = {0, 0, 0, 0};
-                int stride[4] = {(int)gemmSize[0], (int)gemmSize[1], (int)gemmSize[1], (int)gemmSize[1]};
-                if(gemmSize[3] < 4) {
-                    stride[2] = gemmSize[0]; // output: [N, M]
-                }
+
                 ret |= kernel->get().setArg(idx++, tensorMemory[0]);
                 ret |= kernel->get().setArg(idx++, tensorMemory[1]);
-                if(gemmSize[5] >= 1) {
+                if(biasType >= 1) {
                     ret |= kernel->get().setArg(idx++, tensorMemory[3]);
                 }
                 ret |= kernel->get().setArg(idx++, tensorMemory[2]);
@@ -380,17 +515,17 @@ std::vector<uint32_t> getGemmParams(const std::vector<uint32_t> &gemmSize, const
                 
                 MNN_CHECK_CL_SUCCESS(ret, "setArg getGemmParams Xgemm Kernel");
                 
+                cl::Event event;
                 auto res = CL_SUCCESS;
                 res = runtime->commandQueue().enqueueNDRangeKernel(kernel->get(), cl::NullRange, {globalWorkSize[0], globalWorkSize[1]}, {localWorkSize[0], localWorkSize[1]}, nullptr, &event);
                 if (res != CL_SUCCESS) {
                     MNN_PRINT("Xgemm params tune error: %d\n", res);
                     continue;
                 }
+                cost_time = (int)runtime->getCostTime(&event);
             }
             
-            
-            int cost_time = (int)runtime->getCostTime(&event);
-            if(cost_time < min_cost) {
+            if(cost_time > 0 && cost_time < min_cost) {
                 min_cost = cost_time;
                 params_prefer[0]  = kwg;
                 params_prefer[1]  = kwi;

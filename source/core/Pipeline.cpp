@@ -27,12 +27,9 @@ static bool _supportQuant(const Op* op, const std::vector<Tensor*>& inputs, cons
     switch (otype) {
         case OpType_Convolution:
         case OpType_ConvolutionDepthwise:
-            if (op->main_as_Convolution2D() && op->main_as_Convolution2D()->weight() != nullptr) {
+            if (inputs.size() > 1) {
                 return false;
-            } else {
-                return true;
             }
-        case OpType_Deconvolution:
             if (op->main_as_Convolution2D() && op->main_as_Convolution2D()->weight() != nullptr) {
                 return false;
             } else {
@@ -51,6 +48,19 @@ static bool _supportQuant(const Op* op, const std::vector<Tensor*>& inputs, cons
             }
             return true;
         }
+        case OpType_Pooling:
+            if (op->main_as_Pool() && op->main_as_Pool()->type() == PoolType_MAXPOOL ) {
+                return true;
+            } else if (op->main_as_Pool() && op->main_as_Pool()->type() == PoolType_AVEPOOL) {
+                return true;
+            } else {
+                return false;
+            }
+        case OpType_Softmax:
+            return true;
+        case OpType_LayerNorm:
+            return true;
+#ifdef MNN_SUPPORT_QUANT_EXTEND
         case OpType_ReLU:
             if (TensorUtils::getDescribe(inputs[0])->quantAttr.get() != TensorUtils::getDescribe(outputs[0])->quantAttr.get()) {
                 return false;
@@ -61,23 +71,11 @@ static bool _supportQuant(const Op* op, const std::vector<Tensor*>& inputs, cons
             } else {
                 return false;
             }
-        case OpType_Pooling:
-            if (op->main_as_Pool() && op->main_as_Pool()->type() == PoolType_MAXPOOL ) {
-                return true;
-            } else if (op->main_as_Pool() && op->main_as_Pool()->type() == PoolType_AVEPOOL) {
-                return true;
-            } else {
-                return false;
-            }
         case OpType_BinaryOp:
-            return true;
-        case OpType_Softmax:
             return true;
         case OpType_Scale:
             return true;
         case OpType_Interp:
-            return true;
-        case OpType_LayerNorm:
             return true;
         case OpType_UnaryOp:
             if (op->main_as_UnaryOp()->tableInt8() || op->main_as_UnaryOp()->opType() == UnaryOpOperation_NEG || op->main_as_UnaryOp()->opType() == UnaryOpOperation_ABS || op->main_as_UnaryOp()->opType() == UnaryOpOperation_SIGN) {
@@ -87,6 +85,7 @@ static bool _supportQuant(const Op* op, const std::vector<Tensor*>& inputs, cons
             }
         case OpType_PReLU:
             return true;
+#endif
         default:
             break;
     }
@@ -164,7 +163,6 @@ static void _releaseTensor(Tensor* origin, bool mAllocInput, int group) {
 
 static bool _allocTensor(Tensor* t, Backend* curBackend, bool outputStatic, int group) {
     auto memoryType = _getTensorStorageType(t, outputStatic);
-    auto bn         = TensorUtils::getDescribeOrigin(t)->getBackend();
     auto des = TensorUtils::getDescribe(t);
     if (des->group != group) {
         return true;
@@ -204,13 +202,13 @@ void Pipeline::UnitInfo::setUp(const Command& command, int index, const Op* orig
 #else
     mContent->type = EnumNameOpType(command.op->type());
 #endif
-#ifndef MNN_BUILD_MINI
+#ifndef MNN_SKIPBUILD_GEOMETRY
     mContent->flops = SizeComputer::computeFlops(command.op, command.inputs, command.outputs);
 #endif
 }
 
 Pipeline::Pipeline(const std::string& externalFile, Schedule::PipelineInfo&& info, bool allocInput, bool outputStatic, const TuningAttr& tune, const Runtime* rt, const Runtime* cpuRt, int geometryMask)
-#ifndef MNN_BUILD_MINI
+#ifndef MNN_SKIPBUILD_GEOMETRY
     : mContext(geometryMask, info.first.cache.second, info.first.cache.first->type(), info.first.info.user ? info.first.info.user->precision :  BackendConfig::Precision_Normal), mUseGeometry(rt->onGetCompilerType()) {
 #else
 {
@@ -268,12 +266,14 @@ ErrorCode Pipeline::encode(bool supportDebug, bool permitCodegen) {
             info.executeBuffer.command = {cmd};
         }
     } else {
-#ifndef MNN_BUILD_MINI
+#ifndef MNN_SKIPBUILD_GEOMETRY
+        mBackend->onClearBuffer();
+        mBackupBackend->onClearBuffer();
         mContext.clear();
         mContext.mNeedRelease = mGeometryNeedRelease;
         FileLoader l(mExternalFile.c_str());
         /** Size Compute and compute Const Begin */
-        auto res = GeometryComputerUtils::shapeComputeAndGeometryTransform(&l, mInfo.second, mContext, mInfo.first.cache.second, mUseGeometry, false, permitCodegen);
+        auto res = GeometryComputerUtils::shapeComputeAndGeometryTransform(mCpuRuntime, &l, mInfo.second, mContext, mInfo.first.cache.second, mUseGeometry, false, permitCodegen);
         if (res != NO_ERROR) {
             return res;
         }
@@ -492,7 +492,7 @@ void Pipeline::_pushTuningTask(std::vector<Schedule::OpCacheInfo>&& initInfos) {
             iterP->outputs = iter.outputs;
             iterP->op = iter.op;
             iterP->buffer = iter.buffer;
-#ifndef MNN_BUILD_MINI
+#ifndef MNN_SKIPBUILD_GEOMETRY
             if (iter.op->type() == OpType_Raster) {
                 iterP->buffer = mContext.mRasterOp;
             }
@@ -878,7 +878,7 @@ void Pipeline::_recycleDynamicMemory(Command* command) {
     }
 }
 void Pipeline::openResizeCheck() {
-#ifndef MNN_BUILD_MINI
+#ifndef MNN_SKIPBUILD_GEOMETRY
     mGeometryNeedRelease = false;
     for (auto& info : mInfo.second) {
         info.computeCache.open();
@@ -887,7 +887,7 @@ void Pipeline::openResizeCheck() {
 }
 
 ErrorCode Pipeline::fixResizeCache() {
-#ifndef MNN_BUILD_MINI
+#ifndef MNN_SKIPBUILD_GEOMETRY
     // TODO: Recompute release mask and set mGeometryNeedRelease = true
     for (auto& info : mInfo.second) {
         if (info.type == Schedule::CONSTANT && (!info.computeCache.needExecuteConst)) {
@@ -897,6 +897,10 @@ ErrorCode Pipeline::fixResizeCache() {
             info.cacheBuffer.extras.clear();
         }
     }
+    mInfo.first.cache.first->onResizeBegin();
+    mInfo.first.cache.first->onResizeEnd();
+    mInfo.first.cache.second->onResizeBegin();
+    mInfo.first.cache.second->onResizeEnd();
     auto res = mInfo.first.cache.first->onSelectDynamicAllocator(1, 2);
     res = res && mInfo.first.cache.second->onSelectDynamicAllocator(1, 2);
     if (!res) {
@@ -1094,8 +1098,6 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc, bool forbidReplace) {
     /* Create Execution Begin */
     auto& mBackend = mInfo.first.cache.first;
     auto& mBackupBackend = mInfo.first.cache.second;
-    mBackend->onClearBuffer();
-    mBackupBackend->onClearBuffer();
     // Check If we need a lone time for init
     if (mBackend->type() != MNN_FORWARD_CPU && mBackend->type() != MNN_FORWARD_CPU_EXTENSION && mTuneAttr.autoSetOpType) {
         Runtime::OpInfo dstInfo;
@@ -1134,7 +1136,7 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc, bool forbidReplace) {
             if (!mRuntime->hasAsyncWork()) {
                 _pushTuningTask(std::move(initInfos));
             }
-            mBackend.reset(mCpuRuntime->onCreate(nullptr));
+            mBackend.reset(mCpuRuntime->onCreate(nullptr, mBackupBackend.get()));
         }
     }
     {
@@ -1144,10 +1146,12 @@ ErrorCode Pipeline::allocMemory(bool firstMalloc, bool forbidReplace) {
         }
     }
     /* Create Execution End */
-
+    mBackend->onClearBuffer();
+    mBackupBackend->onClearBuffer();
     _SetTensorBackend(mInfo, mAllocInput);
     // Insert Wrap If needed
     {
+        // Reset memory allocator for backend
         auto insertCode = _InsertCopy(mInfo, mCacheConstTensors, mWrapTensors, mAllocInput, forbidReplace);
         if (NO_ERROR != insertCode) {
             return insertCode;
@@ -1167,20 +1171,18 @@ void Pipeline::_copyInputs() {
         if (!std::get<3>(tensorCache)) {
             continue;
         }
-        auto curBackend = TensorUtils::getDescribeOrigin(std::get<0>(tensorCache))->getBackend();
-        if (curBackend->type() == MNN_FORWARD_CPU) {
-            TensorUtils::getDescribeOrigin(iter.first)->getBackend()->onCopyBuffer(iter.first, std::get<0>(tensorCache));
-        } else {
-            curBackend->onCopyBuffer(iter.first, std::get<0>(tensorCache));
-        }
+        std::get<0>(tensorCache)->copyFromHostTensor(iter.first);
         std::get<3>(tensorCache) = false;
     }
 }
 ErrorCode Pipeline::execute() {
     _copyInputs();
+    auto enterCode = _enterExecute();
+    if (NO_ERROR != enterCode) {
+        return enterCode;
+    }
     auto& mBackend = mInfo.first.cache.first;
     auto& mBackupBackend = mInfo.first.cache.second;
-    mBackend->onExecuteBegin();
     for (auto& info : mInfo.second) {
         if (info.type == Schedule::CONSTANT) {
             continue;
@@ -1210,20 +1212,42 @@ ErrorCode Pipeline::execute() {
 #endif
             auto code = cmd.execution->onExecute(cmd.workInputs, cmd.workOutputs);
             if (NO_ERROR != code) {
-                mBackend->onExecuteEnd();
+                _exitExecute();
                 return code;
             }
         }
     }
-    mBackend->onExecuteEnd();
+    _exitExecute();
     return NO_ERROR;
+}
+ErrorCode Pipeline::_enterExecute() {
+    auto& mBackend = mInfo.first.cache.first;
+    auto& mBackupBackend = mInfo.first.cache.second;
+    mBackend->onExecuteBegin();
+    mBackupBackend->onExecuteBegin();
+    if (mRuntime->pCurrentStatus != NO_ERROR) {
+        return (ErrorCode)mRuntime->pCurrentStatus;
+    }
+    if (mCpuRuntime->pCurrentStatus != NO_ERROR) {
+        return (ErrorCode)mCpuRuntime->pCurrentStatus;
+    }
+    return NO_ERROR;
+}
+void Pipeline::_exitExecute() {
+    auto& mBackend = mInfo.first.cache.first;
+    auto& mBackupBackend = mInfo.first.cache.second;
+    mBackupBackend->onExecuteEnd();
+    mBackend->onExecuteEnd();
 }
 
 ErrorCode Pipeline::executeCallBack(const TensorCallBackWithInfo& before, const TensorCallBackWithInfo& after) {
     _copyInputs();
+    auto enterCode = _enterExecute();
+    if (NO_ERROR != enterCode) {
+        return enterCode;
+    }
     auto& mBackend = mInfo.first.cache.first;
     auto& mBackupBackend = mInfo.first.cache.second;
-    mBackend->onExecuteBegin();
     for (auto& info : mInfo.second) {
         if (info.type == Schedule::CONSTANT) {
             continue;
@@ -1235,7 +1259,7 @@ ErrorCode Pipeline::executeCallBack(const TensorCallBackWithInfo& before, const 
             if (nullptr == cmd.info.get()) {
                 auto code = cmd.execution->onExecute(cmd.workInputs, cmd.workOutputs);
                 if (NO_ERROR != code) {
-                    mBackend->onExecuteEnd();
+                    _exitExecute();
                     return code;
                 }
                 continue;
@@ -1244,18 +1268,18 @@ ErrorCode Pipeline::executeCallBack(const TensorCallBackWithInfo& before, const 
             if (run) {
                 auto code = cmd.execution->onExecute(cmd.workInputs, cmd.workOutputs);
                 if (NO_ERROR != code) {
-                    mBackend->onExecuteEnd();
+                    _exitExecute();
                     return code;
                 }
             }
             auto stop = !(after(cmd.workOutputs, cmd.info.get()));
             if (stop) {
-                mBackend->onExecuteEnd();
+                _exitExecute();
                 return CALL_BACK_STOP;
             }
         }
     }
-    mBackend->onExecuteEnd();
+    _exitExecute();
     return NO_ERROR;
 }
 

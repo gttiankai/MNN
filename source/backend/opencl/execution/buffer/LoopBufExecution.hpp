@@ -21,6 +21,7 @@ public:
     LoopGatherBufExecution(const LoopParam *loop, const MNN::Op *op, Backend *bn);
     virtual ~LoopGatherBufExecution() = default;
     virtual ErrorCode onEncode(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) override;
+    ErrorCode InitCommandOnEncode(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs);
 
 private:
     const LoopParam *mLoop;
@@ -39,14 +40,11 @@ public:
     LoopBatchMatMulBufExecution(const LoopParam *loop, const MNN::Op *op, Backend *bn);
     virtual ~LoopBatchMatMulBufExecution() = default;
     virtual ErrorCode onEncode(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) override;
-    virtual ErrorCode onExecute(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) override;
 
 
 private:
     const LoopParam *mLoop;
     std::vector<Tensor *> mTensors;
-    std::vector<std::shared_ptr<Tensor>> mTmpTensors;
-    std::vector<std::shared_ptr<Tensor>> mOffsetTensors;
     int mOffset[4];
     int mStep[4];
     int mIter[4];
@@ -54,8 +52,6 @@ private:
     bool mTransposeA = false;
     bool mTransposeB = false;
     std::set<std::string> mBuildOptions;
-    bool mBatchGemmOpt = false;
-    int mBatch, mM, mN, mK;
 };
 
 
@@ -69,6 +65,11 @@ private:
     const LoopParam *mLoop;
     std::vector<Tensor *> mTensors;
     std::set<std::string> mBuildOptions;
+    int mOffset[4];
+    int mStep[4];
+    int mStride_src0[3];
+    int mStride_src1[3];
+    int mStride_dst[3];
 };
 
 } // namespace OpenCL

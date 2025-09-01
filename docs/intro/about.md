@@ -68,19 +68,19 @@ MNN适配的硬件架构与精度详见下表：
 | Architecture / Precision |  | Normal | FP16 | BF16 | Int8 |
 | --- | --- | --- | --- | --- | --- |
 | CPU | Native | B | C | B | B |
-|  | x86/x64-SSE4.1 | A | B | B | A |
-|  | x86/x64-AVX2 | S | B | B | A |
-|  | x86/x64-AVX512 | S | B | B | S |
+|  | x86/x64-SSE4.1 | A | C | C | A |
+|  | x86/x64-AVX2 | S | C | C | A |
+|  | x86/x64-AVX512 | S | C | C | S |
 |  | ARMv7a | S | S (ARMv8.2) | S | S |
 |  | ARMv8 | S | S (ARMv8.2) | S(ARMv8.6) | S |
-| GPU | OpenCL | A | S | C | C |
-|  | Vulkan | A | A | C | C |
-|  | Metal | A | S | C | C |
-|  | CUDA | A | S | C | C |
-| NPU | CoreML | B | C | C | C |
-|  | HIAI | B | C | C | B |
-|  | NNAPI | B | C | C | C |
-
+| GPU | OpenCL | A | S | C | S |
+|  | Vulkan | A | A | C | A |
+|  | Metal | A | S | C | S |
+|  | CUDA | A | S | C | A |
+| NPU | CoreML | A | C | C | C |
+|  | HIAI | A | C | C | C |
+|  | NNAPI | B | B | C | B |
+|  | QNN | C | B | C | C |
 
 ## 工具
 

@@ -2,18 +2,18 @@
 //  StaticModule.cpp
 //  MNN
 //
-//  Created by MNN on b'2020/09/10'.
+//  Created by MNN on 2020/09/10.
 //  Copyright © 2018, Alibaba Group Holding Limited
 //
 
 #include "StaticModule.hpp"
 #include <MNN/AutoTime.hpp>
-#include <MNN/expr/Executor.hpp>
 #include <MNN/expr/ExecutorScope.hpp>
 #include <MNN/expr/ExprCreator.hpp>
 #include "Utils.hpp"
 #include "core/WrapExecution.hpp"
 #include "core/MNNMemoryUtils.h"
+#include "ModuleInside.hpp"
 #include "RuntimeAttr.hpp"
 #include "core/TensorUtils.hpp"
 #include "core/FileLoader.hpp"
@@ -33,7 +33,7 @@ static const StaticModule* getStaticModule(const Module* m) {
 }
 
 static std::vector<std::shared_ptr<BufferStorage>> preRearrangeWeights( // NOLINT
-                                                                       Schedule::ScheduleInfo& scheduleInfo, Backend* backend, Backend* backupBackend, const Module* base = nullptr) {
+                                                                       Schedule::ScheduleInfo& scheduleInfo, Backend* firstbackend, Backend* backupBackend, const Module* base = nullptr) {
     std::map<const std::string, std::shared_ptr<Execution>> base_executions;
     if (base != nullptr) {
         // has base module
@@ -59,6 +59,10 @@ static std::vector<std::shared_ptr<BufferStorage>> preRearrangeWeights( // NOLIN
         auto op    = pipelineInfo[i].op;
         std::unique_ptr<OpT> op_table(op->UnPack());
         std::shared_ptr<Execution> exe;
+        Backend* backend = firstbackend;
+        if (info.type == Schedule::CONSTANT) {
+            backend = backupBackend;
+        }
         switch (op->type()) {
             case MNN::OpType_DepthwiseConvInt8:
             case MNN::OpType_ConvInt8:
@@ -156,6 +160,22 @@ static std::vector<std::shared_ptr<BufferStorage>> preRearrangeWeights( // NOLIN
                 }
                 break;
             }
+            case MNN::OpType_LayerNorm: {
+                std::shared_ptr<BufferStorage> tmpstorage;
+                exe.reset(OpCommonUtils::createExecutionWithExternal(backend, info.inputs, info.outputs, op, &loader, tmpstorage));
+                if (exe.get() == nullptr) {
+                    exe.reset(OpCommonUtils::createExecutionWithExternal(backupBackend, info.inputs, info.outputs, op, &loader, tmpstorage));
+                }
+                if (nullptr == exe) {
+                    break;
+                }
+                // The exe can't clone
+                if (!exe->onClone(nullptr, op, nullptr)) {
+                    exe = nullptr;
+                    break;
+                }
+                break;
+            }
             default: {
                 break;
             }
@@ -229,7 +249,7 @@ void StaticModule::resetInputOutputs() {
         }
         pipelineInfo.first.inputTensorCopyCache.insert(std::make_pair(mInputTensors[i], std::make_tuple(nullptr, nullptr, true, true)));
         mPrevInputTensor[i].first = nullptr;
-        mPrevInputTensor[i].second = nullptr;
+        mPrevInputTensor[i].second = MNN_FORWARD_CPU;
     }
     mOutputTensors.resize(mResource->mOutputFromTensor.size());
     for (int i = 0; i < mResource->mOutputFromTensor.size(); ++i) {
@@ -290,11 +310,14 @@ StaticModule::StaticModule(std::vector<int> inputs,
                            Schedule::ScheduleInfo&& scheduleInfo,
                            std::shared_ptr<Schedule::ScheduleInfo> sharedConst,
                            Session::ModeGroup&& mode,
-                           RuntimeInfo&& rt,
+                           std::shared_ptr<Executor::RuntimeManager> rtm,
                            const Module::Config& config
                            ) {
     setType("StaticModule");
     mResource.reset(new Resource);
+    mRuntimeManager = rtm;
+    MNN_ASSERT(nullptr != rtm);
+    auto rt = rtm->getInside()->mRuntime;
     mResource->mSharedConst = sharedConst;
     mResource->mModes = std::move(mode);
     mResource->mBnInfo.user = &mResource->mBnConfig;
@@ -304,20 +327,8 @@ StaticModule::StaticModule(std::vector<int> inputs,
     std::map<const Op*, std::pair<std::shared_ptr<Execution>, DataType>> exeCache;
     MNN_ASSERT(1 == scheduleInfo.pipelineInfo.size());
     auto& bnCache = scheduleInfo.pipelineInfo[0].first;
-    bnCache.cache.first.reset(rt.first[bnCache.info.type]->onCreate(bnCache.info.user));
-    if (bnCache.cache.first->type() == MNN_FORWARD_CPU) {
-        bnCache.cache.second = bnCache.cache.first;
-    } else {
-        // Use Multi-thread if user has set numberthread > 1
-        BackendConfig defaultConfig;
-        defaultConfig.flags = 4;
-        auto cpurt = rt.first.find(MNN_FORWARD_CPU);
-        if (cpurt != rt.first.end()) {
-            bnCache.cache.second.reset(cpurt->second->onCreate(&defaultConfig));
-        } else {
-            bnCache.cache.second.reset(rt.second->onCreate(&defaultConfig));
-        }
-    }
+    // Create Backend for prearrange
+    Session::createPipelineBackend(scheduleInfo.pipelineInfo[0], rt);
     if (config.rearrange) {
         mResource->mBuffer = preRearrangeWeights(scheduleInfo, bnCache.cache.first.get(), bnCache.cache.second.get(), config.base);
     } else {
@@ -365,10 +376,10 @@ StaticModule::StaticModule(std::vector<int> inputs,
     }
     mResource->mOutputs = std::move(outputs);
 
-    bool needResize = scheduleInfo.validForResize && mResource->mModes.inputMode == Interpreter::Session_Input_Inside;
+    bool canResize = scheduleInfo.validForResize && mResource->mModes.inputMode == Interpreter::Session_Input_Inside;
     mSession.reset(new Session(std::move(scheduleInfo), mResource->mModes, std::move(rt)));
     resetInputOutputs();
-    if (needResize) {
+    if (canResize && (!config.rearrange)) {
         mSession->resize();
     }
 }
@@ -379,7 +390,6 @@ void StaticModule::onClearCache() {
     if (nullptr != mSession) {
         for (int i=0; i<mPrevInputTensor.size(); ++i) {
             mPrevInputTensor[i].first = nullptr;
-            mPrevInputTensor[i].second = nullptr;
         }
         for (auto& iter : mSession->getPipelineInfo(0).first.inputTensorCopyCache) {
             std::get<3>(iter.second) = true;
@@ -389,6 +399,8 @@ void StaticModule::onClearCache() {
 ErrorCode StaticModule::_resize(const std::vector<Express::VARP>& inputs) {
     ErrorCode code = NO_ERROR;
     auto& pipelineInfo = mSession->getPipelineInfo(0);
+    auto rtmInside = mRuntimeManager->getInside();
+    int curStatus = 0;
     if (mResource->mModes.inputMode == Interpreter::Session_Input_User) {
         pipelineInfo.first.inputBackendChange = false;
         bool needResize = mResource->mUseContentInputs;
@@ -400,14 +412,18 @@ ErrorCode StaticModule::_resize(const std::vector<Express::VARP>& inputs) {
             Schedule::TENSORCACHE* cacheTensor = nullptr;
             if (mPrevInputTensor[i].first != inputTensor) {
                 auto newBackend = TensorUtils::getDescribeOrigin(inputTensor)->getBackend();
-                if (mPrevInputTensor[i].second != newBackend) {
+                auto newType = MNN_FORWARD_CPU;
+                if (nullptr != newBackend) {
+                    newType = newBackend->type();
+                }
+                if (mPrevInputTensor[i].second != newType) {
                     pipelineInfo.first.inputBackendChange = true;
                 }
                 auto cacheIter = pipelineInfo.first.inputTensorCopyCache.find(mInputTensors[i]);
                 cacheTensor = &cacheIter->second;
                 MNN_ASSERT(cacheIter != pipelineInfo.first.inputTensorCopyCache.end());
                 std::get<3>(cacheIter->second) = true;
-                mPrevInputTensor[i] = std::make_pair(inputTensor, newBackend);
+                mPrevInputTensor[i] = std::make_pair(inputTensor, newType);
                 if (std::get<1>(*cacheTensor) != nullptr) {
                     if (!WrapExecution::needWrap(inputTensor,   TensorUtils::getDescribeOrigin(std::get<0>(*cacheTensor))->getBackend())) {
                         // No need copy now, reset it
@@ -488,6 +504,7 @@ ErrorCode StaticModule::_resize(const std::vector<Express::VARP>& inputs) {
                 }
             }
         }
+        mSession->getInfo(Interpreter::RESIZE_STATUS, &curStatus);
         code = mSession->resize();
     } else {
         // Resize
@@ -504,6 +521,7 @@ ErrorCode StaticModule::_resize(const std::vector<Express::VARP>& inputs) {
                 mSession->setNeedResize();
             }
         }
+        mSession->getInfo(Interpreter::RESIZE_STATUS, &curStatus);
         code = mSession->resize();
         // Copy
         for (int i = 0; i < inputs.size(); ++i) {
@@ -515,6 +533,7 @@ ErrorCode StaticModule::_resize(const std::vector<Express::VARP>& inputs) {
             mInputTensors[i]->copyFromHostTensor(inputTensor);
         }
     }
+    rtmInside->mResizeStatus = ALIMAX(rtmInside->mResizeStatus, curStatus);
     return code;
 }
 
@@ -606,17 +625,18 @@ std::vector<Express::VARP> StaticModule::onForward(const std::vector<Express::VA
     mSession->getInfo(Interpreter::FLOPS, &flops);
     glo->getDebugTools()->flops += flops;
 #endif
+
     return outputs;
 }
 
 Module* StaticModule::clone(CloneContext* ctx) const {
     StaticModule* module(new StaticModule);
     module->mResource = mResource;
+    module->mRuntimeManager = ctx->pRuntimeManager;
     if (mResource->mOutputFromTensor.empty()) {
         return this->cloneBaseTo(ctx, module);
     }
-    // TODO: If RuntimeManager is not the same as Runtime, may copy error
-    auto rt = Executor::getRuntime();
+    auto rt = ctx->pRuntimeManager->getInside()->mRuntime;
     module->mSession.reset(mSession->clone(std::move(rt), mResource->mSharedConst));
     module->resetInputOutputs();
     return this->cloneBaseTo(ctx, module);

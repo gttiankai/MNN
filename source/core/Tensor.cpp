@@ -77,7 +77,7 @@ Tensor::Tensor(const Tensor* tensor, DimensionType type, bool allocMemory) {
 
     // format mapping
     auto originType = tensor->getDimensionType();
-    if (originType != type && buffer.dimensions >= 4) {
+    if (originType != type && buffer.dimensions >= 3) {
         std::vector<int> axisMap;
         // NCHW -> NHWC
         if (originType == CAFFE) {
@@ -171,6 +171,13 @@ bool Tensor::copyFromHostTensor(const Tensor* hostTensor) {
     auto bn = mDescribe->getBackend();
     if (nullptr == bn) {
         return false;
+    }
+    auto hostbn = hostTensor->mDescribe->getBackend();
+    std::shared_ptr<Tensor> tmpTensor;
+    if (nullptr != hostbn && hostbn->type() != bn->type() && hostbn->type() != MNN_FORWARD_CPU) {
+        tmpTensor.reset(new Tensor(hostTensor, hostTensor->getDimensionType()));
+        hostTensor->copyToHostTensor(tmpTensor.get());
+        hostTensor = tmpTensor.get();
     }
     bn->onCopyBuffer(hostTensor, this);
     return true;
@@ -343,7 +350,11 @@ void Tensor::print() const {
 
     // convert to host if needed
     auto printee = this;
-    bool device  = this->buffer().host == NULL && this->buffer().device != 0;
+    auto bnType = MNN_FORWARD_CPU;
+    if (nullptr != mDescribe->getBackend()) {
+        bnType = mDescribe->getBackend()->type();
+    }
+    bool device  = bnType != MNN_FORWARD_CPU;
     if (device) {
         printee = this->createHostTensorFromDevice(this, true);
     }

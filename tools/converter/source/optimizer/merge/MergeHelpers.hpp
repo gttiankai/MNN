@@ -23,6 +23,7 @@ bool IsCast(Express::EXPRP expr);
 bool IsConcat(Express::EXPRP expr);
 bool IsReshape(Express::EXPRP expr);
 bool IsUnsqueeze(Express::EXPRP expr);
+bool IsSqueeze(Express::EXPRP expr);
 bool IsTranspose(Express::EXPRP expr);
 bool IsScatterNd(Express::EXPRP expr);
 bool IsMatMul(Express::EXPRP expr);
@@ -30,6 +31,7 @@ bool IsSoftmax(Express::EXPRP expr);
 bool IsSlice(Express::EXPRP expr);
 bool IsSelect(Express::EXPRP expr);
 bool IsGatherV2(Express::EXPRP expr);
+bool IsLayerNorm(Express::EXPRP expr);
 
 bool IsBinaryAdd(Express::EXPRP expr);
 bool IsBinarySub(Express::EXPRP expr);

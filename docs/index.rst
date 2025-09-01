@@ -22,6 +22,7 @@
    :name: quick-start
 
    start/overall
+   start/python
    start/demo
 
 .. toctree::
@@ -42,6 +43,7 @@
    inference/session
    inference/module
    inference/python
+   inference/npu
 
 .. toctree::
    :maxdepth: 1
@@ -58,7 +60,6 @@
    train/expr
    train/data
    train/optim
-   train/quant
    train/finetune
    train/distl
 
@@ -69,20 +70,19 @@
 
    transformers/diffusion
    transformers/llm
+   transformers/models
 
 .. toctree::
    :maxdepth: 1
-   :caption: 测试工具
+   :caption: 工具集
    :name: tools
 
    tools/convert
    tools/test
    tools/benchmark
-   tools/quant
    tools/compress
    tools/visual
    tools/python
-   tools/script
 
 .. toctree::
    :maxdepth: 1

@@ -15,6 +15,15 @@
   - `MNNDump2Json` 模型转换为Json
   - `MNNRevert2Buffer` Json转换为模型
   - `OnnxClip` Onnx模型裁剪工具
+### MNN模型转为QNN模型工具
+- 相关编译选项
+  - `MNN_QNN_CONVERT_MODE` 在打开MNN_QNN宏前提下，是否编译成mnn模型转为QNN模型的功能库
+- 编译命令
+    ```bash
+    cmake .. -DMNN_QNN=ON -DMNN_QNN_CONVERT_MODE=ON
+    ```
+- 编译产物
+  - `MNN2QNNModel` 模型转换工具
 ## 训练框架
 - 相关编译选项
   - `MNN_BUILD_TRAIN` 是否编译训练框架
@@ -53,13 +62,14 @@
   - `libllm.so` 大语言模型推理库
   - `llm_demo` 大语言模型推理示例程序
   - `diffusion_demo` 扩散模型示例程序
+  - `llm_bench` 大语言模型测评工具
 ## 测试工具
 - 相关编译选项
-  - `MNN_BUILD_TOOL` 是否编译测试工具
+  - `MNN_BUILD_TOOLS` 是否编译测试工具
 - 编译命令
     ```bash
     mkdir build && cd build
-    cmake .. -DMNN_BUILD_TOOL=ON
+    cmake .. -DMNN_BUILD_TOOLS=ON
     make -j4
     ```
 - 编译产物
@@ -81,7 +91,7 @@
   - `checkFile.out` 测试两个文件是否一致
   - `winogradExample.out` winograd示例
   - `fuseTest` 测试 GPU 自定义算子的功能，目前仅支持 Vulkan Buffer 模式
-  - `GpuInterTest.out` 测试 GPU 内存输入的功能，目前仅支持 OpenCL Buffer 模式与 OpenGL texture 模式，编译时许打开 MNN_OPENCL 与 MNN_OPENGL
+  - `GpuInterTest.out` 测试 GPU 内存输入的功能，目前仅支持 OpenCL Buffer 模式与 OpenGL texture 模式，编译时需打开 MNN_OPENCL 与 MNN_OPENGL
   - `LoRA` 将LorA权重添加到模型权重中
 ## Benchmark工具
 - 相关编译选项
@@ -120,7 +130,7 @@
 ## MNN OpenCV库
 - 相关编译选项
   - `MNN_BUILD_OPENCV` 是否编译OpenCV函数接口
-  - `MNN_IMGCODECS` 是否编译OpenCV图像解码器
+  - `MNN_IMGCODECS` 是否编译OpenCV图像编解码器
   - `MNN_OPENCV_TEST` 是否编译OpenCV单元测试
   - `MNN_OPENCV_BENCH` 是否编译OpenCV性能测试
 - 编译命令
@@ -133,6 +143,19 @@
   - `libMNNOpenCV.so` MNN OpenCV函数库
   - `opencv_test` MNN OpenCV单元测试
   - `opencv_bench` MNN OpenCV性能测试
+## MNN Audio库
+- 相关编译选项
+  - `MNN_BUILD_AUDIO` 是否编译Audio函数接口
+  - `MNN_AUDIO_TEST` 是否编译Audio单元测试
+- 编译命令
+    ```bash
+    mkdir build && cd build
+    cmake .. -MNN_BUILD_AUDIO=ON -MNN_AUDIO_TEST=ON
+    make -j4
+    ```
+- 编译产物
+  - `libMNNAudio.so` MNN Audio函数库
+  - `audio_test` MNN Audio单元测试
 
 ## 示例工程
 - 相关编译选项
@@ -157,6 +180,7 @@
   - `rasterDemo.out` Raster示例
   - `nluDemo.out` nlu模型示例
   - `mergeInplaceForCPU` 将模型中可以Inplace计算的算子改成Inplace计算，可以减少内存占用，但限定CPU后端运行
+  - `OpenCLProgramBuildTest.out` 测试OpenCL后端的Program在设备上是否能编译成功
 ## 单元测试
 - 相关编译选项
   - `MNN_BUILD_TEST` 是否编译MNN单元测试

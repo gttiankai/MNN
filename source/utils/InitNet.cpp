@@ -204,6 +204,9 @@ bool initTensors(std::vector<std::shared_ptr<Tensor>>& tensors, const Net* net, 
         }
         auto blob = des->blob();
         auto& tb = tensors[index]->buffer();
+        if (nullptr == blob) {
+            continue;
+        }
         if (auto idims = blob->dims()) {
             for (int d = 0; d < idims->size(); d++) {
                 tb.dim[d].extent = idims->Get(d);
@@ -325,15 +328,4 @@ void setInputOutputForOps(std::vector<std::shared_ptr<Tensor>>& allTensors, cons
     }
 }
 
-void initPipelineInfosFromNet(std::vector<Schedule::OpCacheInfo>& infos, const Net* net, std::vector<std::shared_ptr<Tensor>>& allTensors) {
-    std::vector<const Op*> ops;
-    for (int i = 0; i < net->oplists()->size(); i++) {
-        auto op = net->oplists()->GetAs<Op>(i);
-        if (needComputeOp(op)) {
-            ops.push_back(op);
-        }
-    }
-    initPipelineInfosFromOps(infos, ops, allTensors);
-    setInputOutputForOps(allTensors, ops);
-}
 } // namespace MNN

@@ -29,17 +29,23 @@ struct RuntimeHint {
     // 0: Defer, 1: Eager
     int memoryAllocatorType = 0;
     int winogradMemoryUsed = 3;
-    
+
     // 0-100, 50 means litter core has 50% capacity of large core
     int cpuDecreaseRate = 50;
     int dynamicQuantOption = 0;
 
-    // 0: Do not quantize kvcache, just store float
-    // 1: Only quantize key cache, use int8 asymmetric quantization 
-    // 2: Only quantize value cache, use fp8 quantization
-    // 3: quantize both key and value cache as described above
-    int kvcacheQuantOption = 0;
-    
+    // qkvQuantOption % 8:
+    // 0: Do not quantize
+    // 1: Only quantize key, use int8 asymmetric quantization
+    // 2: Only quantize value, use fp8 quantization
+    // 3: quantize both key and value
+    // 4: quantize query, key and value, and use gemm int8 kernel to compute K*V
+
+    // qkvQuantOption / 8:
+    // 1: use flash attention
+
+    int qkvQuantOption = 8;
+
     // the kvcache size limit of each layer
     // if the size of kvcache in memory exceeds the limit
     // it will be moved to disk to save memory
@@ -48,6 +54,26 @@ struct RuntimeHint {
 
     // path of the kvcache directory
     std::string kvcacheDirPath = "/tmp";
+
+    std::string midMemoryPath;
+    std::string weightMemoryPath;
+    int mmapFileSize = 1024; // MB
+    int useCachedMmap = 0;
+
+    // path of the NPU model directory
+    std::string npuModelDirPath;
+
+    // op encoder number for once commit
+    int encorderNumForCommit = 10;
+    int initThreadNumber = 0;
+    
+    // whether to use Arm sme2 cores when threads>1
+    bool useArmSme2Cores = true;
+
+    bool enableKleidiAI = false;
+
+    // Use CPU Ids
+    std::vector<int> cpuIds;
 };
 /** abstract backend */
 class Backend : public NonCopyable {
@@ -96,7 +122,9 @@ public:
          - do NOTHING when `onReleaseBuffer` is called.
          - releases memory when `onClearBuffer` is called or when the backend is deleted.
          */
-        DYNAMIC_SEPERATE
+        DYNAMIC_SEPERATE,
+        
+        DYNAMIC_IN_EXECUTION
     };
 
 public:
@@ -148,7 +176,7 @@ public:
     virtual const Runtime* getRuntime() {
         return nullptr;
     }
-    
+
     /**
      * @brief allocate buffer of tensor for given storage type.
      * @param tensor        buffer provider.
@@ -178,7 +206,7 @@ public:
      * @return MemObj for release, if failed, return nullptr.
      */
     virtual MemObj* onAcquire(const Tensor* tensor, StorageType storageType) = 0;
-    
+
     virtual bool onSelectDynamicAllocator(int index, int maxIndex) {
         return false;
     }
@@ -229,8 +257,16 @@ public:
         return 0;
     }
 
+public:
+    void* getMetaPtr() {
+        return mMetaPtr;
+    }
+    void setMetaPtr(void* ptr) {
+        mMetaPtr = ptr;
+    }
 private:
     const MNNForwardType mType;
+    void* mMetaPtr;
 };
 
 /** Each backend belong to a runtime*/
@@ -267,7 +303,7 @@ public:
      @brief create backend
      @return created backend
      */
-    virtual Backend* onCreate(const BackendConfig* config = nullptr) const = 0;
+    virtual Backend* onCreate(const BackendConfig* config = nullptr, Backend* origin = nullptr) const = 0;
 
     /**
      @brief reset runtime
@@ -287,6 +323,10 @@ public:
      */
     virtual float onGetMemoryInMB() {
         return 0.0f;
+    }
+    // For NPU backend don't support load from buffer , use onSetCachePath
+    virtual bool onSetCachePath(const char* path, int mode) {
+        return false;
     }
 
     // If buffer is not nullptr, try copy cache, else delete cache
@@ -333,6 +373,18 @@ public:
     MNN_PUBLIC bool hasAsyncWork() const;
     void setAsyncWork(std::future<int>&& future);
     MNN_PUBLIC void waitAsyncWork();
+
+    virtual void onConcurrencyBegin() const {
+        // Do nothing
+    }
+    virtual void onConcurrencyEnd() const {
+        // Do nothing
+    }
+
+    mutable int pCurrentStatus = 0; // NO_ERROR
+
+    // TODO: Move to Backend
+    void* pMeta = nullptr;
 private:
     std::future<int> mFuture;
     RuntimeHint mHint;
@@ -355,6 +407,9 @@ public:
     virtual bool onValid(Backend::Info& info) const {
         info.mode = Backend::Info::DIRECT;
         return true;
+    }
+    virtual bool onGetDeviceInfo(const std::string& deviceKey, std::string& deviceValue) const {
+        return false;
     }
 protected:
     /**

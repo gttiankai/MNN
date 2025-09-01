@@ -13,7 +13,7 @@
 #include "Backend.hpp"
 #include "AutoStorage.h"
 #include "Tensor_generated.h"
-#define MNN_MAX_TENSOR_DIM 8
+#define MNN_MAX_TENSOR_DIM 9
 
 #ifdef CONSTANT
 #undef CONSTANT
@@ -114,6 +114,8 @@ struct Tensor::InsideDescribe {
         pad mPads;
         // For isMutable = false Tensor , determine whether the content can be convert to main backend
         uint32_t stageMask = 0;
+        // Use for shared memory
+        SharedPtr<Backend::MemObj> mSharedMem;
     };
     std::shared_ptr<NativeInsideDescribe> mContent;
     SharedPtr<Backend::MemObj> mem;
@@ -187,7 +189,7 @@ public:
     static bool isTileRegion(const Tensor::InsideDescribe::Region& region);
     static bool isDepthToSpaceRegions(const Tensor* output);
     static bool reshapeSlice(Tensor::InsideDescribe::Region& slice, int outside, int inside, int axis);
-    
+
     class FuseRegionStatus;
     class MNN_PUBLIC FuseWrap {
     public:
@@ -201,10 +203,10 @@ public:
     static void adjustTensorForCompability(Tensor* t);
     static Tensor::DimensionType getDimType(const Tensor* t);
     static std::vector<float> getQuantInfo(const Tensor* t);
-    
+
     static size_t getRawSize(const Tensor* t);
     static void setRasterInputs(Command* cmd);
-    
+
     static bool refTensorContent(Tensor* dst, const Tensor* src);
 
     static int getTensorChannelPack(const Tensor* tensor);
@@ -214,6 +216,10 @@ public:
     static void setTensorSupportPack(const Tensor* tensor, bool flag);
 
     static void setTensorPad(const Tensor* tensor, int left, int right, int bottom, int top);
+    
+    static void setSharedMem(const Tensor* tensor, Backend::MemObj *mem);
+    
+    static Backend::MemObj* getSharedMem(const Tensor* tensor);
 };
 } // namespace MNN
 

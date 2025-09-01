@@ -45,11 +45,11 @@ public:
         std::shared_ptr<Tensor> mScaleBias;
     };
     struct Resource {
-        std::shared_ptr<Tensor> mWeightKernelSum;
         std::shared_ptr<Tensor> mWeight;
         std::shared_ptr<Tensor> mBias;
         ResourceDequantizeInfo mDequantize;
         Backend* backend;
+        static void copyBias(float* dst, const float* bias, int outputCount, Backend* backend);
         bool copyBiasAlign(const float* bias, int outputCount);
         int hU;
         int lU;
@@ -62,19 +62,14 @@ public:
         std::shared_ptr<Tensor> mWeightInt8;       // PTQ's   and  DynamicQ's weight
         std::shared_ptr<Tensor> mOriginBias;       // PTQ's   and  DynamicQ's bias
         std::shared_ptr<Tensor> mOriginScale;      // PTQ's scale + bias, DynamicQ's alpha + zero;
-        std::shared_ptr<Tensor> mWeightQuantZero;  // PTQ's  zero
         std::shared_ptr<Tensor> mWeightKernelSum;  // PTQ's   and  DynamicQ's weight kernel sum;
         std::vector<float> mReluThreshold;
         // relu or relu6
         bool mRelu;
         int mActBits;  // quant bits
 
-        int mOutputCount;
         bool mUseConvQuan = true;
         bool mWeightAsymmetricQuant = true;
-#ifdef MNN_USE_SSE
-        std::vector<int> offsets;
-#endif
         // Origin Attributes from net
         float mInputScale = 0.0f;
         float mOutputScale = 0.0f;
@@ -82,9 +77,11 @@ public:
         int32_t mOutputZeroPoint;
         int8_t mClampMin;
         int8_t mClampMax;
+        bool mDynamicQuant = false;
+        int32_t mBlockNum = 1;
     };
     struct MutableResourceInt8 {
-        MutableResourceInt8(std::shared_ptr<ResourceInt8> res, Backend* backend);
+        MutableResourceInt8(std::shared_ptr<ResourceInt8> res, Backend* backend, float* scalePtr = nullptr);
         void updateInputOutputScale(std::vector<float> inputQuantInfo, std::vector<float> outputQuantInfo);
         std::shared_ptr<ResourceInt8> mResource;
         float mInputScale = 0.0f;
@@ -100,8 +97,6 @@ public:
         bool mValid;
     };
     static std::shared_ptr<ResourceInt8> makeResourceInt8(Backend *backend, const MNN::Op *op, int pack=4);
-    static void makeResource(Backend* backend, std::shared_ptr<Resource> resource, const MNN::Op *op, std::shared_ptr<ResourceInt8> resourceInt8 = nullptr);
-    static void makeResourceNew(Backend* backend, const Convolution2D* conv2d, std::shared_ptr<ResourceInt8> resourceInt8);
     CPUConvolution(const Convolution2DCommon *convOp, Backend *b);
     virtual ~CPUConvolution() = default;
     virtual ErrorCode onResize(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) override;

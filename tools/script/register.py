@@ -151,7 +151,7 @@ def generateCPUFile(rootDir):
             f.write(l+'();\n')
         f.write('#endif\n')
         f.write("}\n}\n")
-        
+
 def generateOPENCLFile(rootDir):
     openclDir = os.path.join(rootDir, "source", "backend", "opencl")
     openclBufferDir = os.path.join(rootDir, "source", "backend", "opencl", "execution", "buffer")
@@ -184,11 +184,11 @@ def generateOPENCLFile(rootDir):
                         opNamesImage.append(funcName)
                     else:
                         opNamesBuffer.append(funcName)
-                        
+
     bufferFileNames = os.listdir(openclBufferDir)
     print(bufferFileNames)
     collectFile(bufferFileNames, openclBufferDir)
-    
+
     imageFileNames = os.listdir(openclImageDir)
     print(imageFileNames)
     collectFile(imageFileNames, openclImageDir)

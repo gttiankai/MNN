@@ -88,7 +88,8 @@ class UnitTest(unittest.TestCase):
         self.assertEqualArray(x.getNumpyData(), data)
         x = MNN.Tensor([2, 2], MNN.Halide_Type_Float, data.__array_interface__['data'][0], MNN.Tensor_DimensionType_Tensorflow)
         self.assertEqualArray(x.getNumpyData(), data)
-        x = MNN.Tensor([2, 2], MNN.Halide_Type_Float, mp.array([[1., 2.], [3., 4.]]).ptr, MNN.Tensor_DimensionType_Tensorflow)
+        v = mp.array([[1., 2.], [3., 4.]])
+        x = MNN.Tensor([2, 2], MNN.Halide_Type_Float, v.ptr, MNN.Tensor_DimensionType_Tensorflow)
         self.assertEqualArray(x.getNumpyData(), data)
     def test_image_process(self):
         src = np.asarray([[50, 50], [200, 50], [50, 200]], dtype=np.float32)
@@ -200,8 +201,6 @@ class UnitTest(unittest.TestCase):
         self.assertEqualVar(expr.less(self.x, self.x), np.less(self.x_, self.x_))
     def test_floordiv(self):
         self.assertEqualVar(expr.floordiv(2.0, 1.2), np.floor_divide(2.0, 1.2))
-    def test_less(self):
-        self.assertEqualVar(expr.less(self.x, self.x), np.less(self.x_, self.x_))
     def test_squared_difference(self):
         self.assertEqualVar(expr.squared_difference(self.x, self.x), np.square(self.x_ - self.x_))
     def test_equal(self):
@@ -243,7 +242,7 @@ class UnitTest(unittest.TestCase):
         self.assertEqualVar(expr.cast(self.x, expr.int), self.x_.astype(np.int32))
     def test_matmul(self):
         self.assertEqualVar(expr.matmul(self.x, self.x), np.matmul(self.x_, self.x_))
-    def test_normalize(self):
+    def test_normalize_with_reference(self):
         def _refNormalize(src, batch, channel, area, scale, eps):
             dst = [0.0] * (batch * channel * area)
             for b in range(0, batch):
@@ -413,7 +412,7 @@ class UnitTest(unittest.TestCase):
         x = expr.convert(x, expr.NC4HW4)
         size = expr.const([0.0, 0.0, 0.0, 0.0], [1, 1, 2, 2], expr.NCHW, expr.float)
         self.assertEqual(expr.convert(expr.crop(x, size, 2, [1, 1]), expr.NCHW).read_as_tuple(), (6.0, 7.0, 10.0, 11.0))
-    def test_resize(self):
+    def test_resize_expr(self):
         x = expr.const([-1.0, -2.0, 3.0, 4.0], [1, 2, 2, 1], expr.NHWC, expr.float)
         x = expr.convert(x, expr.NC4HW4)
         y = expr.resize(x, 2.0, 2.0)
@@ -483,14 +482,6 @@ class UnitTest(unittest.TestCase):
         upper  = expr.scalar(-1)
         y = np.asarray([0, 1, 2, 3, -1, 0, 1, 2, -0, -1, 0, 1, -0, -0, -1, 0]).reshape([4, 4]).astype(np.float32)
         self.assertEqualVar(expr.matrix_band_part(matrix, lower, upper), y)
-    def test_moments(self):
-        x = expr.const([0.0, 1.0, 2.0, 3.0, -1.0, 0.0, 1.0, 2.0, -2.0, -1.0, 0.0, 1.0, -3.0, -2.0, -1.0, 0.0], [1, 4, 4, 1], expr.NCHW, expr.float)
-        x = expr.convert(x, expr.NC4HW4)
-        shift = expr.scalar(1.0)
-        res = expr.moments(x, [2, 3], shift, True)
-        self.assertEqual(len(res), 2)
-        self.assertEqual(res[0].read_as_tuple(), (1.5, 0.5, -0.5, -1.5))   # mean
-        self.assertEqual(res[1].read_as_tuple(), (1.25, 1.25, 1.25, 1.25)) # var
     def test_setdiff1d(self):
         x = expr.const([-1, 2, -3, 4, 5, -6, 7, -8, -9, -10, 11, 12, 13, 14, -15, -16], [16], expr.NHWC, expr.int)
         y = expr.const([-1, 2, -3, 4, 5, -6, 7, -8], [8], expr.NHWC, expr.int)
@@ -901,7 +892,7 @@ class UnitTest(unittest.TestCase):
         x = cv.merge(channels)
         y = cv2.merge(channels_)
         self.assertEqualVar(x, y)
-    def test_split(self):
+    def test_split_image_channels(self):
         # dim = 1
         a = mp.arange(12.)
         a_ = np.arange(12.)
@@ -1215,6 +1206,9 @@ class UnitTest(unittest.TestCase):
         x_ = x.read()
         self.assertEqualVars(mp.histogram(x, 7, (2, 4)), np.histogram(x_, 7, (2, 4)))
     def test_ndarray(self):
+        e = mp.array([])
+        e_ = np.array([])
+        self.assertEqualVar(e, e_)
         x = mp.array([[1,2],[3,4]])
         x_ = np.array([[1,2],[3,4]])
         self.assertEqual(x.all(), x_.all())

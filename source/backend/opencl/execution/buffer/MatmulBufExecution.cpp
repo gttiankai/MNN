@@ -76,9 +76,9 @@ ErrorCode MatMulBufExecution::onEncode(const std::vector<Tensor *> &inputs, cons
         uint32_t batch = 1;
         std::vector<uint32_t> param;
         if(inputs.size() == 2) {
-            param = getGemmParams({(uint32_t)M, (uint32_t)N, (uint32_t)K, layout, batch, (uint32_t)0}, {openCLBuffer(input0), openCLBuffer(input1), openCLBuffer(output)}, mOpenCLBackend->getOpenCLRuntime());
+            param = getGemmParams({(uint32_t)M, (uint32_t)N, (uint32_t)K, layout, batch, (uint32_t)0}, {openCLBuffer(input0), openCLBuffer(input1), openCLBuffer(output)}, mOpenCLBackend->getOpenCLRuntime(), mOpenCLBackend->getPrecision(), mOpenCLBackend->getCLTuneLevel());
         } else {
-            param = getGemmParams({(uint32_t)M, (uint32_t)N, (uint32_t)K, layout, batch, (uint32_t)1}, {openCLBuffer(input0), openCLBuffer(input1), openCLBuffer(output), openCLBuffer(inputs[2])}, mOpenCLBackend->getOpenCLRuntime());
+            param = getGemmParams({(uint32_t)M, (uint32_t)N, (uint32_t)K, layout, batch, (uint32_t)1}, {openCLBuffer(input0), openCLBuffer(input1), openCLBuffer(output), openCLBuffer(inputs[2])}, mOpenCLBackend->getOpenCLRuntime(), mOpenCLBackend->getPrecision(), mOpenCLBackend->getCLTuneLevel());
         }
         int KWG=param[0], KWI=param[1], MDIMA=param[2], MDIMC=param[3], MWG=param[4], NDIMB=param[5], NDIMC=param[6], NWG=param[7], SA=param[8], SB=param[9], STRM=param[10], STRN=param[11], VWM=param[12], VWN=param[13];
         buildOptions.emplace("-DKWG=" + std::to_string(KWG));
@@ -107,7 +107,7 @@ ErrorCode MatMulBufExecution::onEncode(const std::vector<Tensor *> &inputs, cons
             buildOptions.emplace("-DRELAX_WORKGROUP_SIZE=1");
         }
 
-        unit.kernel       = runtime->buildKernel("matmul_params_buf", "Xgemm", buildOptions);
+        unit.kernel       = runtime->buildKernel("matmul_params_buf", "Xgemm", buildOptions, mOpenCLBackend->getPrecision());
 
      } else if(canUseTile) {
         if(mTransposeA) {
@@ -119,14 +119,26 @@ ErrorCode MatMulBufExecution::onEncode(const std::vector<Tensor *> &inputs, cons
         // Match with Small tileM->OPWM tileN->OPWN tileK->CPWK localM->OPWM/OPTM localN->OPWN/OPTN
         buildOptions.emplace(" -DOPWM=64 -DOPWN=128 -DCPWK=8 -DOPTM=4 -DOPTN=8");
         
-        unit.kernel       = runtime->buildKernel("matmul_local_buf", "matmul_local_buf", buildOptions);
+        unit.kernel       = runtime->buildKernel("matmul_local_buf", "matmul_local_buf", buildOptions, mOpenCLBackend->getPrecision());
     } else {
         if(mTransposeA) {
-            mKernelName = mTransposeB ? "matmul_transA_transB_buf":"matmul_transA_buf";
-        } else {
-            mKernelName = mTransposeB ? "matmul_transB_buf":"matmul_buf";
+            buildOptions.emplace(" -DTRANSPOSE_A");
         }
-        unit.kernel       = runtime->buildKernel("matmul_buf", mKernelName, buildOptions);
+        if(mTransposeB) {
+            buildOptions.emplace(" -DTRANSPOSE_B");
+        }
+        if(M % 4 != 0) {
+            buildOptions.emplace(" -DM_LEAVE");
+            buildOptions.emplace(" -DM_LEAVE_NUM=" + std::to_string(M % 4));
+        }
+        if(N % 4 != 0) {
+            buildOptions.emplace(" -DN_LEAVE");
+            buildOptions.emplace(" -DN_LEAVE_NUM=" + std::to_string(N % 4));
+        }
+        if(K % 4 != 0) {
+            buildOptions.emplace(" -DK_LEAVE");
+        }
+        unit.kernel       = runtime->buildKernel("matmul_buf", "matmul_buf", buildOptions, mOpenCLBackend->getPrecision());
     }
     
     mMaxWorkGroupSize = static_cast<uint32_t>(runtime->getMaxWorkGroupSize(unit.kernel));
@@ -183,46 +195,22 @@ ErrorCode MatMulBufExecution::onEncode(const std::vector<Tensor *> &inputs, cons
         MNN_CHECK_CL_SUCCESS(ret, "setArg MatMulBufExecution use tile opt");
 
     } else {
-        if(mTransposeA) {
-            mGlobalWorkSize = {static_cast<uint32_t>(N_4), static_cast<uint32_t>(M_4)};
-            int idx            = 0;
-            ret |= unit.kernel->get().setArg(idx++, mGlobalWorkSize[0]);
-            ret |= unit.kernel->get().setArg(idx++, mGlobalWorkSize[1]);
-            ret |= unit.kernel->get().setArg(idx++, openCLBuffer(input0));
-            ret |= unit.kernel->get().setArg(idx++, openCLBuffer(input1));
-            if(inputs.size() > 2) {
-                ret |= unit.kernel->get().setArg(idx++, openCLBuffer(inputs[2]));
-            }
-            ret |= unit.kernel->get().setArg(idx++, openCLBuffer(output));
-            ret |= unit.kernel->get().setArg(idx++, static_cast<int>(K));
-            ret |= unit.kernel->get().setArg(idx++, static_cast<int>(K_4));
-            ret |= unit.kernel->get().setArg(idx++, static_cast<int>(M));
-            ret |= unit.kernel->get().setArg(idx++, static_cast<int>(M_4));
-            ret |= unit.kernel->get().setArg(idx++, static_cast<int>(N_4));
-            ret |= unit.kernel->get().setArg(idx++, static_cast<int>(N));
-            MNN_CHECK_CL_SUCCESS(ret, "setArg MatMulBufExecution mTransposeA");
-            
-            mLocalWorkSize = localWS2DDefault(mGlobalWorkSize, mMaxWorkGroupSize, mOpenCLBackend->getOpenCLRuntime(), mKernelName, unit.kernel).first;
+        mGlobalWorkSize = {static_cast<uint32_t>(N_4), static_cast<uint32_t>(M_4)};
+        int idx            = 0;
+        ret |= unit.kernel->get().setArg(idx++, mGlobalWorkSize[0]);
+        ret |= unit.kernel->get().setArg(idx++, mGlobalWorkSize[1]);
+        ret |= unit.kernel->get().setArg(idx++, openCLBuffer(input0));
+        ret |= unit.kernel->get().setArg(idx++, openCLBuffer(input1));
+        if(inputs.size() > 2) {
+            ret |= unit.kernel->get().setArg(idx++, openCLBuffer(inputs[2]));
         }
-        else {
+        ret |= unit.kernel->get().setArg(idx++, openCLBuffer(output));
+        ret |= unit.kernel->get().setArg(idx++, static_cast<int>(M));
+        ret |= unit.kernel->get().setArg(idx++, static_cast<int>(N));
+        ret |= unit.kernel->get().setArg(idx++, static_cast<int>(K));
+        MNN_CHECK_CL_SUCCESS(ret, "setArg MatMulBufExecution mTransposeA");
             
-            mGlobalWorkSize = {static_cast<uint32_t>(N_4), static_cast<uint32_t>(M)};
-            int idx            = 0;
-            ret |= unit.kernel->get().setArg(idx++, mGlobalWorkSize[0]);
-            ret |= unit.kernel->get().setArg(idx++, mGlobalWorkSize[1]);
-            ret |= unit.kernel->get().setArg(idx++, openCLBuffer(input0));
-            ret |= unit.kernel->get().setArg(idx++, openCLBuffer(input1));
-            if(inputs.size() > 2) {
-                ret |= unit.kernel->get().setArg(idx++, openCLBuffer(inputs[2]));
-            }
-            ret |= unit.kernel->get().setArg(idx++, openCLBuffer(output));
-            ret |= unit.kernel->get().setArg(idx++, static_cast<int>(K));
-            ret |= unit.kernel->get().setArg(idx++, static_cast<int>(K_4));
-            ret |= unit.kernel->get().setArg(idx++, static_cast<int>(N_4));
-            ret |= unit.kernel->get().setArg(idx++, static_cast<int>(N));
-            MNN_CHECK_CL_SUCCESS(ret, "setArg MatMulBufExecution");
-            mLocalWorkSize = localWS2DDefault(mGlobalWorkSize, mMaxWorkGroupSize, mOpenCLBackend->getOpenCLRuntime(), mKernelName, unit.kernel).first;
-        }
+        mLocalWorkSize = localWS2DDefault(mGlobalWorkSize, mMaxWorkGroupSize, mOpenCLBackend->getOpenCLRuntime(), mKernelName, unit.kernel, mOpenCLBackend->getCLTuneLevel(), "matmul_buf").first;
     }
     mOpenCLBackend->recordKernel2d(unit.kernel, mGlobalWorkSize, mLocalWorkSize);
     unit.globalWorkSize = {mGlobalWorkSize[0], mGlobalWorkSize[1]};
